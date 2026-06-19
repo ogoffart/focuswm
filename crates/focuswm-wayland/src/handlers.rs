@@ -7,6 +7,7 @@
 //! XWayland and dmabuf are later milestones.
 
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_callback::WlCallback;
@@ -23,10 +24,12 @@ use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-    XdgToplevelSurfaceData,
+    PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
+    XdgShellState, XdgToplevelSurfaceData,
 };
+use smithay::utils::{Logical, Rectangle};
 use smithay::wayland::shm::{with_buffer_contents as shm_with_buffer_contents, BufferData, ShmHandler, ShmState};
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
@@ -59,14 +62,22 @@ impl CompositorHandler for FocusState {
 
         // Toplevel window?
         if let Some(entry) = self.windows.get(&root) {
-            let id = entry.id;
+            let (id, decorated) = (entry.id, entry.decorated);
             let title = read_title(&root);
             let app_id = read_app_id(&root);
             let mut cache = std::mem::take(&mut self.surface_pixels);
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
             self.pending_callbacks.append(&mut callbacks);
-            if let Some((width, height, pixels)) = buffer {
+            if let Some(buffer) = buffer {
+                // Crop to the client's declared window geometry, dropping any
+                // client-side-decoration shadow margin. Record the offset so
+                // pointer input maps back to surface-local coordinates.
+                let geometry = window_geometry(&root);
+                let ((width, height, pixels), offset) = crop_to_geometry(buffer, geometry);
+                if let Some(entry) = self.windows.get_mut(&root) {
+                    entry.geometry_offset = offset;
+                }
                 let _ = self.events.send(Event::WindowBuffer {
                     id,
                     width,
@@ -74,6 +85,7 @@ impl CompositorHandler for FocusState {
                     pixels,
                     title,
                     app_id,
+                    decorated,
                 });
             }
             return;
@@ -262,6 +274,10 @@ impl XdgShellHandler for FocusState {
             WindowEntry {
                 id,
                 toplevel: surface,
+                // Assume client-side decorations until the client negotiates
+                // server-side ones via xdg-decoration.
+                decorated: false,
+                geometry_offset: (0, 0),
             },
         );
         let _ = self.events.send(Event::WindowAdded(id));
@@ -336,6 +352,112 @@ impl XdgShellHandler for FocusState {
         _edges: xdg_toplevel::ResizeEdge,
     ) {
     }
+
+    // focuswm presents each task's windows filling the content area, so
+    // maximize/fullscreen just confirm the current (output-sized) geometry.
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        let size = self.current_output_size;
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Maximized);
+            state.size = Some((size.0.max(1), size.1.max(1)).into());
+        });
+        surface.send_configure();
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        surface.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Maximized);
+        });
+        surface.send_configure();
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        let size = self.current_output_size;
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Fullscreen);
+            state.size = Some((size.0.max(1), size.1.max(1)).into());
+        });
+        surface.send_configure();
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        surface.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Fullscreen);
+        });
+        surface.send_configure();
+    }
+}
+
+impl XdgDecorationHandler for FocusState {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        // Default to server-side decorations; CSD clients follow up to opt out.
+        self.set_decoration_mode(&toplevel, DecorationMode::ServerSide);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        self.set_decoration_mode(&toplevel, mode);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        self.set_decoration_mode(&toplevel, DecorationMode::ServerSide);
+    }
+}
+
+impl FocusState {
+    fn set_decoration_mode(&mut self, toplevel: &ToplevelSurface, mode: DecorationMode) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(mode);
+        });
+        toplevel.send_configure();
+        let decorated = mode == DecorationMode::ServerSide;
+        if let Some(entry) = self.windows.get_mut(toplevel.wl_surface()) {
+            entry.decorated = decorated;
+            let id = entry.id;
+            let _ = self.events.send(Event::WindowDecorated { id, decorated });
+        }
+    }
+}
+
+/// The client's declared window geometry (`xdg_surface.set_window_geometry`).
+fn window_geometry(surface: &WlSurface) -> Option<Rectangle<i32, Logical>> {
+    with_states(surface, |states| {
+        states.cached_state.get::<SurfaceCachedState>().current().geometry
+    })
+}
+
+/// Crop a tightly-packed RGBA8 `(w, h, pixels)` buffer to `geometry` (clamped),
+/// returning the cropped buffer and the top-left offset used. A missing or
+/// full-buffer geometry is a no-op (offset `(0, 0)`).
+fn crop_to_geometry(
+    buffer: (u32, u32, Vec<u8>),
+    geometry: Option<Rectangle<i32, Logical>>,
+) -> ((u32, u32, Vec<u8>), (i32, i32)) {
+    let (w, h, pixels) = buffer;
+    let Some(rect) = geometry else {
+        return ((w, h, pixels), (0, 0));
+    };
+    let (cw, ch) = (w as i32, h as i32);
+    let x0 = rect.loc.x.clamp(0, cw);
+    let y0 = rect.loc.y.clamp(0, ch);
+    let x1 = (rect.loc.x + rect.size.w).clamp(0, cw);
+    let y1 = (rect.loc.y + rect.size.h).clamp(0, ch);
+    let nw = x1 - x0;
+    let nh = y1 - y0;
+    if nw <= 0 || nh <= 0 || (x0 == 0 && y0 == 0 && nw == cw && nh == ch) {
+        return ((w, h, pixels), (0, 0));
+    }
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    let row_bytes = (nw * 4) as usize;
+    for row in 0..nh {
+        let src = (((y0 + row) * cw + x0) * 4) as usize;
+        let dst = (row * nw * 4) as usize;
+        out[dst..dst + row_bytes].copy_from_slice(&pixels[src..src + row_bytes]);
+    }
+    ((nw as u32, nh as u32, out), (x0, y0))
 }
 
 impl BufferHandler for FocusState {
@@ -400,9 +522,19 @@ impl DataDeviceHandler for FocusState {
 impl ClientDndGrabHandler for FocusState {}
 impl ServerDndGrabHandler for FocusState {}
 
+impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler for FocusState {
+    fn primary_selection_state(
+        &self,
+    ) -> &smithay::wayland::selection::primary_selection::PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+
 delegate_compositor!(FocusState);
 delegate_shm!(FocusState);
 delegate_xdg_shell!(FocusState);
+smithay::delegate_xdg_decoration!(FocusState);
 delegate_seat!(FocusState);
 delegate_output!(FocusState);
 delegate_data_device!(FocusState);
+smithay::delegate_primary_selection!(FocusState);

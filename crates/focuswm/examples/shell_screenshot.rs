@@ -96,6 +96,7 @@ fn main() {
             texture: solid_image(40, 42, 54),
             width: 800.0,
             height: 600.0,
+            decorated: false,
         },
         WindowTile {
             id: 11,
@@ -103,6 +104,7 @@ fn main() {
             texture: solid_image(24, 24, 37),
             width: 800.0,
             height: 600.0,
+            decorated: false,
         },
     ];
     ui.global::<AppData>()

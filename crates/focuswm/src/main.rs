@@ -31,6 +31,8 @@ struct WinMeta {
     title: String,
     #[allow(dead_code)]
     app_id: String,
+    /// Whether the compositor should draw a server-side decoration title bar.
+    decorated: bool,
 }
 
 /// UI-thread state shared between the event pump and the rendering notifier.
@@ -198,10 +200,10 @@ fn main() -> anyhow::Result<()> {
             let mut rows = HashMap::new();
             for (row, wid) in active_windows.iter().enumerate() {
                 let id = wid.0;
-                let title = shared
+                let (title, decorated) = shared
                     .meta
                     .get(&id)
-                    .map(|m| m.title.clone())
+                    .map(|m| (m.title.clone(), m.decorated))
                     .unwrap_or_default();
                 let (w, h, texture) = shared
                     .tiles
@@ -214,6 +216,7 @@ fn main() -> anyhow::Result<()> {
                     texture,
                     width: w,
                     height: h,
+                    decorated,
                 });
                 rows.insert(id, row);
             }
@@ -642,6 +645,14 @@ fn main() -> anyhow::Result<()> {
                         s.closed.push(id.0);
                         dirty_windows = true;
                     }
+                    Event::WindowDecorated { id, decorated } => {
+                        let mut s = shared.borrow_mut();
+                        let meta = s.meta.entry(id.0).or_default();
+                        if meta.decorated != decorated {
+                            meta.decorated = decorated;
+                            dirty_windows = true;
+                        }
+                    }
                     Event::WindowBuffer {
                         id,
                         width,
@@ -649,11 +660,13 @@ fn main() -> anyhow::Result<()> {
                         pixels,
                         title,
                         app_id,
+                        decorated,
                     } => {
                         let mut s = shared.borrow_mut();
                         let meta = s.meta.entry(id.0).or_default();
-                        if meta.title != title {
+                        if meta.title != title || meta.decorated != decorated {
                             meta.title = title;
+                            meta.decorated = decorated;
                             dirty_windows = true;
                         }
                         meta.app_id = app_id;
@@ -682,7 +695,7 @@ fn main() -> anyhow::Result<()> {
             }
             // Keep the compositor output sized to the host window's content area.
             if let Some(ui) = weak.upgrade() {
-                sync_output_size(&ui, &cmd_tx, &tasks);
+                sync_output_size(&ui, &cmd_tx, &tasks, &shared);
             }
         }
     });
@@ -868,6 +881,7 @@ fn sync_output_size(
     ui: &Desktop,
     cmd_tx: &focuswm_wayland::CommandSender<Command>,
     tasks: &Rc<RefCell<TaskList>>,
+    shared: &Rc<RefCell<Shared>>,
 ) {
     thread_local! {
         static LAST: RefCell<(i32, i32)> = const { RefCell::new((0, 0)) };
@@ -893,11 +907,15 @@ fn sync_output_size(
             width: content_w,
             height: content_h,
         });
+        let shared = shared.borrow();
         for w in tasks.borrow().active_windows() {
+            // Decorated windows leave room for the 30px server-side title bar.
+            let decorated = shared.meta.get(&w.0).map(|m| m.decorated).unwrap_or(false);
+            let h = if decorated { (content_h - 30).max(1) } else { content_h };
             let _ = cmd_tx.send(Command::ResizeWindow {
                 id: w,
                 width: content_w,
-                height: content_h,
+                height: h,
             });
         }
     }
@@ -976,14 +994,36 @@ fn forward_key(
 /// whether shift is required to produce it.
 fn evdev_keycode(text: &str) -> Option<(u32, bool)> {
     let ch = text.chars().next()?;
-    // Control characters from special keys.
+    // Control + special keys (Slint encodes these as specific code points).
     match ch {
-        '\u{0008}' => return Some((14, false)),  // Backspace
-        '\u{0009}' => return Some((15, false)),  // Tab
+        '\u{0008}' => return Some((14, false)),             // Backspace
+        '\u{0009}' => return Some((15, false)),             // Tab
         '\u{000a}' | '\u{000d}' => return Some((28, false)), // Return
-        '\u{001b}' => return Some((1, false)),   // Escape
-        ' ' => return Some((57, false)),         // Space
+        '\u{001b}' => return Some((1, false)),              // Escape
+        '\u{007f}' => return Some((111, false)),            // Delete
+        ' ' => return Some((57, false)),                    // Space
+        '\u{F700}' => return Some((103, false)),            // UpArrow
+        '\u{F701}' => return Some((108, false)),            // DownArrow
+        '\u{F702}' => return Some((105, false)),            // LeftArrow
+        '\u{F703}' => return Some((106, false)),            // RightArrow
+        '\u{F727}' => return Some((110, false)),            // Insert
+        '\u{F729}' => return Some((102, false)),            // Home
+        '\u{F72B}' => return Some((107, false)),            // End
+        '\u{F72C}' => return Some((104, false)),            // PageUp
+        '\u{F72D}' => return Some((109, false)),            // PageDown
         _ => {}
+    }
+    // Function keys F1..F12 (Slint: F1 = U+F704).
+    if ('\u{F704}'..='\u{F70F}').contains(&ch) {
+        // evdev: F1=59..F10=68, F11=87, F12=88.
+        let n = ch as u32 - 0xF704; // 0-based
+        let kc = match n {
+            0..=9 => 59 + n,   // F1..F10
+            10 => 87,          // F11
+            11 => 88,          // F12
+            _ => return None,
+        };
+        return Some((kc, false));
     }
     // Letters.
     if ch.is_ascii_alphabetic() {

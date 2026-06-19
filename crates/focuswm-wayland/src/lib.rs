@@ -46,8 +46,11 @@ pub enum Event {
     },
     WindowAdded(WindowId),
     WindowRemoved(WindowId),
+    /// The window's decoration mode changed (true = compositor draws SSD).
+    WindowDecorated { id: WindowId, decorated: bool },
     /// A window committed a new frame: tightly-packed RGBA8 of `width`x`height`,
-    /// plus its current title and app-id.
+    /// plus its current title, app-id and whether it wants server-side
+    /// decorations.
     WindowBuffer {
         id: WindowId,
         width: u32,
@@ -55,6 +58,7 @@ pub enum Event {
         pixels: Vec<u8>,
         title: String,
         app_id: String,
+        decorated: bool,
     },
     /// A popup committed a frame, drawn at offset `(ox, oy)` from `parent`.
     PopupBuffer {
@@ -88,12 +92,18 @@ impl std::fmt::Debug for Event {
                 .finish(),
             Event::WindowAdded(id) => f.debug_tuple("WindowAdded").field(id).finish(),
             Event::WindowRemoved(id) => f.debug_tuple("WindowRemoved").field(id).finish(),
+            Event::WindowDecorated { id, decorated } => f
+                .debug_struct("WindowDecorated")
+                .field("id", id)
+                .field("decorated", decorated)
+                .finish(),
             Event::WindowBuffer {
                 id,
                 width,
                 height,
                 title,
                 app_id,
+                decorated,
                 ..
             } => f
                 .debug_struct("WindowBuffer")
@@ -102,6 +112,7 @@ impl std::fmt::Debug for Event {
                 .field("height", height)
                 .field("title", title)
                 .field("app_id", app_id)
+                .field("decorated", decorated)
                 .finish_non_exhaustive(),
             Event::PopupBuffer {
                 id,
@@ -184,10 +195,14 @@ pub fn run(
 
     let compositor_state = CompositorState::new::<FocusState>(&dh);
     let xdg_shell_state = XdgShellState::new::<FocusState>(&dh);
+    let xdg_decoration_state =
+        smithay::wayland::shell::xdg::decoration::XdgDecorationState::new::<FocusState>(&dh);
     let shm_state = ShmState::new::<FocusState>(&dh, Vec::new());
     let output_manager_state = OutputManagerState::new_with_xdg_output::<FocusState>(&dh);
     let mut seat_state = SeatState::<FocusState>::new();
     let data_device_state = DataDeviceState::new::<FocusState>(&dh);
+    let primary_selection_state =
+        smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<FocusState>(&dh);
 
     let mut seat = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(XkbConfig::default(), 200, 25)
@@ -217,10 +232,12 @@ pub fn run(
         loop_signal: event_loop.get_signal(),
         compositor_state,
         xdg_shell_state,
+        xdg_decoration_state,
         shm_state,
         output_manager_state,
         seat_state,
         data_device_state,
+        primary_selection_state,
         seat,
         output,
         current_output_size: (OUTPUT_W, OUTPUT_H),

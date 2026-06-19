@@ -14,6 +14,8 @@ use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::{PopupSurface, ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
 
@@ -28,10 +30,12 @@ pub struct FocusState {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<FocusState>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
     pub seat: Seat<FocusState>,
     pub output: Output,
     /// Current size (logical px) of the output; tracks the host window when
@@ -65,6 +69,13 @@ pub struct FocusState {
 pub struct WindowEntry {
     pub id: WindowId,
     pub toplevel: ToplevelSurface,
+    /// Whether the compositor draws server-side decorations for this window
+    /// (false when the client negotiated client-side decorations).
+    pub decorated: bool,
+    /// Top-left of the client's declared window geometry within its buffer; the
+    /// displayed buffer is cropped to it, so this offset maps pointer coordinates
+    /// back to surface-local space.
+    pub geometry_offset: (i32, i32),
 }
 
 /// A tracked popup (menu, dropdown, tooltip).
@@ -112,12 +123,18 @@ impl FocusState {
             .or_else(|| self.popups.get(surface).map(|e| e.id))
     }
 
-    /// Offer the clipboard to the client owning `surface` (called when keyboard
-    /// focus changes, so copy/paste works).
+    /// Offer the clipboard and primary selection to the client owning `surface`
+    /// (called when keyboard focus changes, so copy/paste — including middle-click
+    /// primary paste — works).
     pub fn set_selection_focus(&self, surface: &WlSurface) {
         use smithay::reexports::wayland_server::Resource;
         let client = surface.client();
         smithay::wayland::selection::data_device::set_data_device_focus(
+            &self.display_handle,
+            &self.seat,
+            client.clone(),
+        );
+        smithay::wayland::selection::primary_selection::set_primary_focus(
             &self.display_handle,
             &self.seat,
             client,
