@@ -1,14 +1,15 @@
 import { Theme } from "theme.slint";
-import { AppData, Logic, ReportData, SettingsData, ReportRow } from "globals.slint";
+import { AppData, Logic, ReportData, SettingsData, TaskSettingsData, ReportRow } from "globals.slint";
 import { TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { Wizard } from "wizard.slint";
 import { Settings } from "settings.slint";
+import { TaskSettings } from "task_settings.slint";
 import { Report } from "report.slint";
 import { LockScreen } from "lock.slint";
 import { Palette } from "std-widgets.slint";
 
-export { AppData, Logic, ReportData, SettingsData, ReportRow, TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon, Theme }
+export { AppData, Logic, ReportData, SettingsData, TaskSettingsData, ReportRow, TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon, Theme }
 
 // A positioned client surface (popup or layer-shell) rendered as a GL texture,
 // forwarding pointer + keyboard to its Wayland surface.
@@ -150,6 +151,7 @@ export component Desktop inherits Window {
 
     in-out property <bool> wizard-open: false;
     in-out property <bool> settings-open: false;
+    in-out property <bool> task-settings-open: false;
     in-out property <bool> report-open: false;
     in-out property <bool> locked: false;
     property <bool> has-active: AppData.active-task >= 0;
@@ -221,6 +223,15 @@ export component Desktop inherits Window {
         width: 100%;
         height: 100%;
         close => { root.settings-open = false; }
+    }
+
+    // Per-task settings overlay.
+    TaskSettings {
+        visible: root.task-settings-open;
+        x: 0; y: 0;
+        width: 100%;
+        height: 100%;
+        close => { root.task-settings-open = false; }
     }
 
     // Report overlay.

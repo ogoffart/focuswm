@@ -10,6 +10,6 @@ mod task;
 
 pub use model::{WindowId, WindowInfo};
 pub use task::{
-    default_categories, default_idle_minutes, Aggregate, Settings, Task, TaskId, TaskList,
-    TimeEntry, TimeLog,
+    default_categories, default_idle_minutes, task_palette, Aggregate, Settings, Task, TaskId,
+    TaskList, TimeEntry, TimeLog,
 };

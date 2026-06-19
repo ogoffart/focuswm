@@ -172,6 +172,16 @@ fn main() -> anyhow::Result<()> {
     ui.global::<AppData>()
         .set_browser_name(config::browser_name().into());
 
+    // Publish the colour palette to the task-settings dialog (static; the chosen
+    // swatch is identified by its index).
+    let palette: Vec<slint::Color> = focuswm_shell::task_palette()
+        .iter()
+        .enumerate()
+        .map(|(i, c)| task_tint(c, i))
+        .collect();
+    ui.global::<TaskSettingsData>()
+        .set_palette(ModelRc::from(Rc::new(VecModel::from(palette))));
+
     // Publish the configured category list to the wizard.
     let apply_categories: Rc<dyn Fn()> = {
         let weak = weak.clone();
@@ -228,12 +238,14 @@ fn main() -> anyhow::Result<()> {
             let items: Vec<TaskItem> = list
                 .tasks()
                 .iter()
-                .map(|t| TaskItem {
+                .enumerate()
+                .map(|(i, t)| TaskItem {
                     id: t.id.0 as i32,
                     name: t.name.clone().into(),
                     category: t.category.clone().into(),
                     minutes: (t.accumulated_secs / 60) as i32,
                     has_notification: t.has_notification,
+                    tint: task_tint(&t.color, i),
                 })
                 .collect();
             tasks_model.set_vec(items);
@@ -441,6 +453,61 @@ fn main() -> anyhow::Result<()> {
             }
             refresh_tasks();
             persist::save(&tasks.borrow());
+        }
+    });
+
+    // Task settings dialog: populate the current task's values and open.
+    ui.global::<Logic>().on_open_task_settings({
+        let tasks = tasks.clone();
+        let mark_active = mark_active.clone();
+        let weak = weak.clone();
+        move |id| {
+            mark_active();
+            let Some(ui) = weak.upgrade() else { return };
+            let list = tasks.borrow();
+            let task_id = TaskId(id as u64);
+            let Some(pos) = list.tasks().iter().position(|t| t.id == task_id) else {
+                return;
+            };
+            let task = &list.tasks()[pos];
+            let categories = &list.settings().categories;
+            let palette = focuswm_shell::task_palette();
+            let tsd = ui.global::<TaskSettingsData>();
+            tsd.set_id(id);
+            tsd.set_name(task.name.clone().into());
+            tsd.set_category_index(
+                categories.iter().position(|c| *c == task.category).unwrap_or(0) as i32,
+            );
+            // Highlight the swatch matching the task's colour (falling back to the
+            // palette colour for its position when unset/custom).
+            let color_index = palette
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case(&task.color))
+                .unwrap_or(pos % palette.len());
+            tsd.set_selected_index(color_index as i32);
+            ui.set_task_settings_open(true);
+        }
+    });
+
+    ui.global::<Logic>().on_save_task_settings({
+        let tasks = tasks.clone();
+        let refresh_tasks = refresh_tasks.clone();
+        let mark_active = mark_active.clone();
+        move |id, name, category, color_index| {
+            mark_active();
+            let palette = focuswm_shell::task_palette();
+            let color = palette
+                .get(color_index as usize)
+                .cloned()
+                .unwrap_or_else(|| palette[0].clone());
+            tasks.borrow_mut().set_task_props(
+                TaskId(id as u64),
+                name.to_string(),
+                category.to_string(),
+                color,
+            );
+            persist::save(&tasks.borrow());
+            refresh_tasks();
         }
     });
 
@@ -1137,6 +1204,31 @@ fn place_texture(
             layers_model.set_row_data(row, t);
         }
     }
+}
+
+/// Resolve a task's accent colour for the UI: its stored "#rrggbb" hex, or — for
+/// tasks persisted before colours existed — a palette colour chosen by position.
+fn task_tint(color: &str, index: usize) -> slint::Color {
+    if let Some(c) = parse_hex_color(color) {
+        return c;
+    }
+    let palette = focuswm_shell::task_palette();
+    parse_hex_color(&palette[index % palette.len()])
+        .unwrap_or_else(|| slint::Color::from_rgb_u8(0x89, 0xb4, 0xfa))
+}
+
+/// Parse a "#rrggbb" hex string into a Slint colour, or `None` if malformed.
+fn parse_hex_color(hex: &str) -> Option<slint::Color> {
+    let h = hex.strip_prefix('#').unwrap_or(hex);
+    if h.len() != 6 {
+        return None;
+    }
+    let rgb = u32::from_str_radix(h, 16).ok()?;
+    Some(slint::Color::from_rgb_u8(
+        (rgb >> 16) as u8,
+        (rgb >> 8) as u8,
+        rgb as u8,
+    ))
 }
 
 /// The current local calendar day, "YYYY-MM-DD".

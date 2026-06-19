@@ -8,6 +8,9 @@ export struct TaskItem {
     // Accumulated focus time, in whole minutes.
     minutes: int,
     has-notification: bool,
+    // Accent colour shown in the sidebar (resolved host-side from the task's
+    // stored hex colour).
+    tint: color,
 }
 
 // One client window, rendered as a GL texture in the active task's view.

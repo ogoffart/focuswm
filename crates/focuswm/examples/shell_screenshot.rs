@@ -69,6 +69,7 @@ fn main() {
             category: "work".into(),
             minutes: 42,
             has_notification: false,
+            tint: slint::Color::from_rgb_u8(0x89, 0xb4, 0xfa),
         },
         TaskItem {
             id: 1,
@@ -76,6 +77,7 @@ fn main() {
             category: "work".into(),
             minutes: 15,
             has_notification: true,
+            tint: slint::Color::from_rgb_u8(0xa6, 0xe3, 0xa1),
         },
         TaskItem {
             id: 2,
@@ -83,6 +85,7 @@ fn main() {
             category: "learning".into(),
             minutes: 90,
             has_notification: false,
+            tint: slint::Color::from_rgb_u8(0xf9, 0xe2, 0xaf),
         },
     ];
     ui.global::<AppData>()
@@ -197,6 +200,30 @@ fn main() {
     ui.set_settings_open(true);
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_settings.png");
     ui.set_settings_open(false);
+
+    // The per-task settings dialog (rename / category / colour picker).
+    let palette: Vec<slint::Color> = [
+        (0x89, 0xb4, 0xfa),
+        (0xa6, 0xe3, 0xa1),
+        (0xf9, 0xe2, 0xaf),
+        (0xf3, 0x8b, 0xa8),
+        (0xcb, 0xa6, 0xf7),
+        (0xfa, 0xb3, 0x87),
+        (0x94, 0xe2, 0xd5),
+        (0xf5, 0xc2, 0xe7),
+    ]
+    .iter()
+    .map(|(r, g, b)| slint::Color::from_rgb_u8(*r, *g, *b))
+    .collect();
+    let tsd = ui.global::<TaskSettingsData>();
+    tsd.set_id(0);
+    tsd.set_name("Fix login bug".into());
+    tsd.set_category_index(0);
+    tsd.set_selected_index(0);
+    tsd.set_palette(ModelRc::from(Rc::new(VecModel::from(palette))));
+    ui.set_task_settings_open(true);
+    save(&ui, &window, PhysicalSize::new(1280, 800), "shot_task_settings.png");
+    ui.set_task_settings_open(false);
 
     // The lock screen.
     ui.set_locked(true);

@@ -26,6 +26,11 @@ pub struct Task {
     pub name: String,
     /// Category, used to group time-tracking reports.
     pub category: String,
+    /// Accent colour for the sidebar, as a "#rrggbb" hex string. Assigned from
+    /// [`task_palette`] on creation; empty for tasks persisted before colours
+    /// existed (the UI falls back to a palette colour in that case).
+    #[serde(default)]
+    pub color: String,
     /// Branch name requested in the wizard (drives the git worktree).
     #[serde(default)]
     pub branch: Option<String>,
@@ -49,6 +54,7 @@ impl Task {
             id,
             name: name.into(),
             category: category.into(),
+            color: String::new(),
             branch: None,
             repo: None,
             worktree_path: None,
@@ -127,8 +133,27 @@ impl TaskList {
     pub fn add_task(&mut self, name: impl Into<String>, category: impl Into<String>) -> TaskId {
         let id = TaskId(self.next_id);
         self.next_id += 1;
-        self.tasks.push(Task::new(id, name, category));
+        let mut task = Task::new(id, name, category);
+        let palette = task_palette();
+        task.color = palette[(id.0 as usize) % palette.len()].clone();
+        self.tasks.push(task);
         id
+    }
+
+    /// Update an existing task's user-editable properties (name, category,
+    /// colour). No-op for an unknown id.
+    pub fn set_task_props(
+        &mut self,
+        id: TaskId,
+        name: impl Into<String>,
+        category: impl Into<String>,
+        color: impl Into<String>,
+    ) {
+        if let Some(task) = self.get_mut(id) {
+            task.name = name.into();
+            task.category = category.into();
+            task.color = color.into();
+        }
     }
 
     /// Remove a task and any windows assigned to it. If it was active, the
@@ -464,6 +489,25 @@ pub fn default_idle_minutes() -> u64 {
     5
 }
 
+/// The palette of accent colours offered for tasks (Catppuccin Mocha hues,
+/// matching the dark theme). New tasks are assigned one round-robin by id, and
+/// the task-settings dialog offers these as swatches.
+pub fn task_palette() -> Vec<String> {
+    [
+        "#89b4fa", // blue
+        "#a6e3a1", // green
+        "#f9e2af", // yellow
+        "#f38ba8", // red
+        "#cba6f7", // mauve
+        "#fab387", // peach
+        "#94e2d5", // teal
+        "#f5c2e7", // pink
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// The built-in default category list.
 pub fn default_categories() -> Vec<String> {
     ["work", "personal", "meeting", "learning", "other"]
@@ -530,6 +574,25 @@ mod tests {
         assert_eq!(list.active_windows(), vec![WindowId(3)]);
         assert!(list.is_visible(WindowId(3)));
         assert!(!list.is_visible(WindowId(1)));
+    }
+
+    #[test]
+    fn new_tasks_get_a_palette_colour_and_props_can_be_edited() {
+        let mut list = TaskList::new();
+        let palette = task_palette();
+        let a = list.add_task("A", "work");
+        let b = list.add_task("B", "work");
+        // Colours are assigned round-robin by id, so the first two differ.
+        assert_eq!(list.get(a).unwrap().color, palette[0]);
+        assert_eq!(list.get(b).unwrap().color, palette[1]);
+        // Editing replaces name, category and colour together.
+        list.set_task_props(a, "Renamed", "personal", "#ffffff");
+        let t = list.get(a).unwrap();
+        assert_eq!(t.name, "Renamed");
+        assert_eq!(t.category, "personal");
+        assert_eq!(t.color, "#ffffff");
+        // Unknown id is a no-op.
+        list.set_task_props(TaskId(999), "x", "y", "z");
     }
 
     #[test]

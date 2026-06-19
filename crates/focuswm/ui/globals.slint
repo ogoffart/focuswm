@@ -37,6 +37,20 @@ export global SettingsData {
     in property <string> idle-minutes;
 }
 
+// Values for the per-task settings dialog. The host pushes the current task's
+// values when the dialog opens; the dialog edits the `in-out` ones in place.
+export global TaskSettingsData {
+    // Id of the task being edited, or -1 when none.
+    in property <int> id: -1;
+    in-out property <string> name;
+    // Index into AppData.categories of the task's category.
+    in-out property <int> category-index;
+    // Index into `palette` of the selected colour.
+    in-out property <int> selected-index;
+    // Available colour swatches (resolved host-side from the colour palette).
+    in property <[color]> palette;
+}
+
 // State the host (Rust) pushes into the UI.
 export global AppData {
     in property <[TaskItem]> tasks;
@@ -74,6 +88,10 @@ export global Logic {
     callback delete-task(int /* id */);
     // Reorder: move the task with this id by `delta` (-1 up, +1 down).
     callback move-task(int /* id */, int /* delta */);
+    // Per-task settings dialog (host populates TaskSettingsData and opens it).
+    callback open-task-settings(int /* id */);
+    // Save edited task properties: id, name, category, colour-palette index.
+    callback save-task-settings(int /* id */, string /* name */, string /* category */, int /* color-index */);
     // Task header actions.
     callback open-browser();
     callback open-terminal();
