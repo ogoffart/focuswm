@@ -71,8 +71,28 @@ pub enum Event {
         pixels: Vec<u8>,
     },
     PopupRemoved(WindowId),
+    /// A window committed a GPU (dmabuf) buffer. The planes carry owned fds for
+    /// the UI thread to import as an EGLImage-backed GL texture.
+    WindowDmabuf {
+        id: WindowId,
+        width: u32,
+        height: u32,
+        /// DRM FourCC format code.
+        fourcc: u32,
+        /// DRM format modifier.
+        modifier: u64,
+        planes: Vec<DmabufPlane>,
+    },
     /// The output was resized (echoed back after a `Command::ResizeOutput`).
     OutputResized { width: i32, height: i32 },
+}
+
+/// One plane of a dmabuf: an owned file descriptor plus its offset and stride.
+#[derive(Debug)]
+pub struct DmabufPlane {
+    pub fd: std::os::fd::OwnedFd,
+    pub offset: u32,
+    pub stride: u32,
 }
 
 impl std::fmt::Debug for Event {
@@ -128,6 +148,14 @@ impl std::fmt::Debug for Event {
                 .field("height", height)
                 .finish_non_exhaustive(),
             Event::PopupRemoved(id) => f.debug_tuple("PopupRemoved").field(id).finish(),
+            Event::WindowDmabuf {
+                id, width, height, ..
+            } => f
+                .debug_struct("WindowDmabuf")
+                .field("id", id)
+                .field("width", width)
+                .field("height", height)
+                .finish_non_exhaustive(),
             Event::OutputResized { width, height } => f
                 .debug_struct("OutputResized")
                 .field("width", width)
@@ -203,6 +231,10 @@ pub fn run(
     let data_device_state = DataDeviceState::new::<FocusState>(&dh);
     let primary_selection_state =
         smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<FocusState>(&dh);
+    // GPU buffers (dmabuf) are on unless explicitly disabled; import happens on
+    // the UI thread and needs a real GPU.
+    let dmabuf_enabled = std::env::var_os("FOCUSWM_NO_DMABUF").is_none();
+    let dmabuf_state = smithay::wayland::dmabuf::DmabufState::new();
 
     let mut seat = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(XkbConfig::default(), 200, 25)
@@ -238,6 +270,9 @@ pub fn run(
         seat_state,
         data_device_state,
         primary_selection_state,
+        dmabuf_state,
+        dmabuf_global: None,
+        dmabuf_enabled,
         seat,
         output,
         current_output_size: (OUTPUT_W, OUTPUT_H),
@@ -249,6 +284,24 @@ pub fn run(
         pending_callbacks: Vec::new(),
         events: events.clone(),
     };
+
+    if state.dmabuf_enabled {
+        use smithay::backend::allocator::{Format, Fourcc, Modifier};
+        // Advertise common 32-bit formats with implicit/linear modifiers. The
+        // real importable set is unknown on this UI-less thread, so import is
+        // attempted on the render thread and may fall back.
+        let formats: Vec<Format> = [Fourcc::Argb8888, Fourcc::Xrgb8888]
+            .into_iter()
+            .flat_map(|code| {
+                [Modifier::Invalid, Modifier::Linear]
+                    .into_iter()
+                    .map(move |modifier| Format { code, modifier })
+            })
+            .collect();
+        let global = state.dmabuf_state.create_global::<FocusState>(&dh, formats);
+        state.dmabuf_global = Some(global);
+        log::info!("dmabuf: advertising zwp_linux_dmabuf_v1");
+    }
 
     let (socket, socket_name, runtime_dir) =
         bind_socket().context("failed to create wayland socket")?;

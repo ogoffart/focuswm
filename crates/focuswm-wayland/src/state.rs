@@ -36,6 +36,10 @@ pub struct FocusState {
     pub seat_state: SeatState<FocusState>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    /// GPU (dmabuf) buffer protocol; the global exists only when dmabuf is on.
+    pub dmabuf_state: smithay::wayland::dmabuf::DmabufState,
+    pub dmabuf_global: Option<smithay::wayland::dmabuf::DmabufGlobal>,
+    pub dmabuf_enabled: bool,
     pub seat: Seat<FocusState>,
     pub output: Output,
     /// Current size (logical px) of the output; tracks the host window when

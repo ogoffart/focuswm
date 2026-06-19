@@ -21,7 +21,7 @@ mod gl_bridge;
 mod persist;
 
 use config::SpawnEnv;
-use gl_bridge::{Frame, GlBridge};
+use gl_bridge::{DmabufFrame, Frame, GlBridge};
 
 slint::include_modules!();
 
@@ -40,8 +40,10 @@ struct WinMeta {
 struct Shared {
     /// Per-window metadata for labels.
     meta: HashMap<u64, WinMeta>,
-    /// Latest frame per window awaiting GPU upload (drained in the notifier).
+    /// Latest shm frame per window awaiting GPU upload (drained in the notifier).
     pending: HashMap<u64, Frame>,
+    /// Latest dmabuf (GPU) frame per window awaiting EGLImage import.
+    pending_dmabuf: HashMap<u64, DmabufFrame>,
     /// Windows removed since the last frame, whose textures must be freed.
     closed: Vec<u64>,
     /// Last-known uploaded texture per window (so switching back to a task shows
@@ -246,6 +248,18 @@ fn main() -> anyhow::Result<()> {
                     for id in std::mem::take(&mut shared.closed) {
                         bridge.remove(id);
                     }
+                    // GPU (dmabuf) frames first: import as EGLImage textures.
+                    let dmabufs: Vec<(u64, DmabufFrame)> =
+                        shared.pending_dmabuf.drain().collect();
+                    for (id, frame) in dmabufs {
+                        let Some(image) = bridge.import_dmabuf(id, &frame) else {
+                            continue;
+                        };
+                        let (w, h) = (frame.width as f32, frame.height as f32);
+                        shared.tiles.insert(id, (w, h, image.clone()));
+                        apply_texture(&windows_model, &shared.rows, id, image, w, h);
+                    }
+                    // shm frames.
                     let frames: Vec<(u64, Frame)> = shared.pending.drain().collect();
                     for (id, frame) in frames {
                         let Some(image) = bridge.upload(id, &frame) else {
@@ -253,14 +267,7 @@ fn main() -> anyhow::Result<()> {
                         };
                         let (w, h) = (frame.width as f32, frame.height as f32);
                         shared.tiles.insert(id, (w, h, image.clone()));
-                        if let Some(&row) = shared.rows.get(&id) {
-                            if let Some(mut tile) = windows_model.row_data(row) {
-                                tile.texture = image;
-                                tile.width = w;
-                                tile.height = h;
-                                windows_model.set_row_data(row, tile);
-                            }
-                        }
+                        apply_texture(&windows_model, &shared.rows, id, image, w, h);
                     }
                 }
                 _ => {}
@@ -684,6 +691,34 @@ fn main() -> anyhow::Result<()> {
                             dirty_windows = true;
                         }
                     }
+                    Event::WindowDmabuf {
+                        id,
+                        width,
+                        height,
+                        fourcc,
+                        modifier,
+                        mut planes,
+                    } => {
+                        // Single-plane import for now.
+                        if let Some(plane) = planes.drain(..).next() {
+                            let mut s = shared.borrow_mut();
+                            s.pending_dmabuf.insert(
+                                id.0,
+                                DmabufFrame {
+                                    width,
+                                    height,
+                                    fourcc,
+                                    modifier,
+                                    fd: plane.fd,
+                                    offset: plane.offset,
+                                    stride: plane.stride,
+                                },
+                            );
+                            if tasks.borrow().is_visible(id) && !s.rows.contains_key(&id.0) {
+                                dirty_windows = true;
+                            }
+                        }
+                    }
                     Event::PopupBuffer { .. } | Event::PopupRemoved(_) => {
                         // Popups are a later milestone; ignore for now.
                     }
@@ -768,6 +803,25 @@ fn main() -> anyhow::Result<()> {
     }
     persist::save(&tasks.borrow());
     Ok(())
+}
+
+/// Update the live `windows` model row for `id` with a freshly imported texture.
+fn apply_texture(
+    windows_model: &VecModel<WindowTile>,
+    rows: &HashMap<u64, usize>,
+    id: u64,
+    image: slint::Image,
+    w: f32,
+    h: f32,
+) {
+    if let Some(&row) = rows.get(&id) {
+        if let Some(mut tile) = windows_model.row_data(row) {
+            tile.texture = image;
+            tile.width = w;
+            tile.height = h;
+            windows_model.set_row_data(row, tile);
+        }
+    }
 }
 
 /// The current local calendar day, "YYYY-MM-DD".
