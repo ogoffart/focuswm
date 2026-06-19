@@ -47,6 +47,11 @@ impl CompositorHandler for FocusState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        // XWayland's own client is created by smithay with its own data type;
+        // handle both so the compositor doesn't panic when X11 apps connect.
+        if let Some(state) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &state.compositor_state;
+        }
         &client
             .get_data::<ClientState>()
             .expect("client missing ClientState")
@@ -115,6 +120,30 @@ impl CompositorHandler for FocusState {
                     width,
                     height,
                     pixels,
+                });
+            }
+            return;
+        }
+
+        // X11 (XWayland) window?
+        if let Some(entry) = self.x11_windows.get(&root) {
+            let id = entry.id;
+            let title = entry.surface.title();
+            let app_id = entry.surface.class();
+            let decorated = !entry.surface.is_override_redirect();
+            let mut cache = std::mem::take(&mut self.surface_pixels);
+            let buffer = composite_tree(&root, &mut cache, &mut callbacks);
+            self.surface_pixels = cache;
+            self.pending_callbacks.append(&mut callbacks);
+            if let Some((width, height, pixels)) = buffer {
+                let _ = self.events.send(Event::WindowBuffer {
+                    id,
+                    width,
+                    height,
+                    pixels,
+                    title,
+                    app_id,
+                    decorated,
                 });
             }
             return;
@@ -551,22 +580,36 @@ impl SeatHandler for FocusState {
 impl SelectionHandler for FocusState {
     type SelectionUserData = ();
 
+    /// A Wayland client set a selection: mirror it to X so X11 apps can paste.
     fn new_selection(
         &mut self,
-        _ty: SelectionTarget,
-        _source: Option<SelectionSource>,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
         _seat: Seat<Self>,
     ) {
+        if let Some(xwm) = self.xwm.as_mut() {
+            let mimes = source.map(|s| s.mime_types());
+            if let Err(err) = xwm.new_selection(ty, mimes) {
+                log::warn!("xwayland: failed to advertise selection to X: {err}");
+            }
+        }
     }
 
+    /// A Wayland client reads a selection X owns: ask X to write it.
     fn send_selection(
         &mut self,
-        _ty: SelectionTarget,
-        _mime_type: String,
-        _fd: std::os::fd::OwnedFd,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: std::os::fd::OwnedFd,
         _seat: Seat<Self>,
         _user_data: &(),
     ) {
+        let handle = self.loop_handle.clone();
+        if let Some(xwm) = self.xwm.as_mut() {
+            if let Err(err) = xwm.send_selection(ty, mime_type, fd, handle) {
+                log::warn!("xwayland: failed to send X selection to Wayland: {err}");
+            }
+        }
     }
 }
 
@@ -612,3 +655,52 @@ delegate_output!(FocusState);
 delegate_data_device!(FocusState);
 smithay::delegate_primary_selection!(FocusState);
 smithay::delegate_dmabuf!(FocusState);
+
+#[cfg(test)]
+mod tests {
+    use super::crop_to_geometry;
+    use smithay::utils::Rectangle;
+
+    // A 2x2 RGBA image whose pixel (x,y) is the byte (y*2+x) repeated 4 times.
+    fn img() -> (u32, u32, Vec<u8>) {
+        let px = |v: u8| [v, v, v, v];
+        let mut buf = Vec::new();
+        for v in 0..4u8 {
+            buf.extend_from_slice(&px(v));
+        }
+        (2, 2, buf)
+    }
+
+    #[test]
+    fn crop_none_is_noop() {
+        let (b, off) = crop_to_geometry(img(), None);
+        assert_eq!(b.0, 2);
+        assert_eq!(off, (0, 0));
+    }
+
+    #[test]
+    fn crop_full_size_is_noop() {
+        let geo = Rectangle::new((0, 0).into(), (2, 2).into());
+        let (b, off) = crop_to_geometry(img(), Some(geo));
+        assert_eq!((b.0, b.1), (2, 2));
+        assert_eq!(off, (0, 0));
+    }
+
+    #[test]
+    fn crop_subrect_extracts_column_and_offset() {
+        // Right column (x=1), both rows -> pixels for v=1 and v=3.
+        let geo = Rectangle::new((1, 0).into(), (1, 2).into());
+        let (b, off) = crop_to_geometry(img(), Some(geo));
+        assert_eq!((b.0, b.1), (1, 2));
+        assert_eq!(off, (1, 0));
+        assert_eq!(b.2, vec![1, 1, 1, 1, 3, 3, 3, 3]);
+    }
+
+    #[test]
+    fn crop_degenerate_is_noop() {
+        let geo = Rectangle::new((5, 5).into(), (0, 0).into());
+        let (b, off) = crop_to_geometry(img(), Some(geo));
+        assert_eq!((b.0, b.1), (2, 2));
+        assert_eq!(off, (0, 0));
+    }
+}

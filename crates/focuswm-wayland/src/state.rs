@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
-use smithay::reexports::calloop::LoopSignal;
+use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_callback::WlCallback;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -27,6 +27,8 @@ use crate::Event;
 pub struct FocusState {
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
+    /// Event-loop handle, used to drive XWayland clipboard transfers.
+    pub loop_handle: LoopHandle<'static, FocusState>,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -53,6 +55,13 @@ pub struct FocusState {
     /// Mapped popups (menus etc.), keyed by their `wl_surface`.
     pub popups: HashMap<WlSurface, PopupEntry>,
 
+    /// XWayland window manager (created once XWayland signals it is ready).
+    pub xwm: Option<smithay::xwayland::X11Wm>,
+    /// xwayland-shell global, associating X11 windows with `wl_surface`s.
+    pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
+    /// Mapped X11 windows, keyed by their associated `wl_surface`.
+    pub x11_windows: HashMap<WlSurface, X11Entry>,
+
     /// Last-known RGBA8 contents of every live surface (window roots and their
     /// subsurfaces), keyed by `wl_surface`. Lets us flatten a surface tree into
     /// one buffer on commit so subsurfaces that don't re-attach every frame stay
@@ -67,6 +76,12 @@ pub struct FocusState {
 
     /// Outbound channel notifying the UI thread of shell events.
     pub events: std::sync::mpsc::Sender<Event>,
+}
+
+/// A tracked X11 (XWayland) window.
+pub struct X11Entry {
+    pub id: WindowId,
+    pub surface: smithay::xwayland::X11Surface,
 }
 
 /// A tracked toplevel window.
@@ -116,6 +131,12 @@ impl FocusState {
                     .values()
                     .find(|e| e.id == id)
                     .map(|e| e.popup.wl_surface().clone())
+            })
+            .or_else(|| {
+                self.x11_windows
+                    .values()
+                    .find(|e| e.id == id)
+                    .and_then(|e| e.surface.wl_surface())
             })
     }
 

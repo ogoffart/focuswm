@@ -25,6 +25,7 @@ use smithay::wayland::shm::ShmState;
 mod handlers;
 mod input;
 mod state;
+mod xwayland;
 
 pub use focuswm_shell::WindowId;
 pub use state::FocusState;
@@ -71,6 +72,8 @@ pub enum Event {
         pixels: Vec<u8>,
     },
     PopupRemoved(WindowId),
+    /// XWayland is up; X11 apps should be launched with `DISPLAY=:{display}`.
+    XwaylandReady { display: u32 },
     /// A window committed a GPU (dmabuf) buffer. The planes carry owned fds for
     /// the UI thread to import as an EGLImage-backed GL texture.
     WindowDmabuf {
@@ -148,6 +151,9 @@ impl std::fmt::Debug for Event {
                 .field("height", height)
                 .finish_non_exhaustive(),
             Event::PopupRemoved(id) => f.debug_tuple("PopupRemoved").field(id).finish(),
+            Event::XwaylandReady { display } => {
+                f.debug_struct("XwaylandReady").field("display", display).finish()
+            }
             Event::WindowDmabuf {
                 id, width, height, ..
             } => f
@@ -235,6 +241,8 @@ pub fn run(
     // the UI thread and needs a real GPU.
     let dmabuf_enabled = std::env::var_os("FOCUSWM_NO_DMABUF").is_none();
     let dmabuf_state = smithay::wayland::dmabuf::DmabufState::new();
+    let xwayland_shell_state =
+        smithay::wayland::xwayland_shell::XWaylandShellState::new::<FocusState>(&dh);
 
     let mut seat = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(XkbConfig::default(), 200, 25)
@@ -262,6 +270,7 @@ pub fn run(
     let mut state = FocusState {
         display_handle: dh.clone(),
         loop_signal: event_loop.get_signal(),
+        loop_handle: event_loop.handle(),
         compositor_state,
         xdg_shell_state,
         xdg_decoration_state,
@@ -279,6 +288,9 @@ pub fn run(
         next_window_id: 0,
         windows: std::collections::HashMap::new(),
         popups: std::collections::HashMap::new(),
+        xwm: None,
+        xwayland_shell_state,
+        x11_windows: std::collections::HashMap::new(),
         surface_pixels: std::collections::HashMap::new(),
         start_time: std::time::Instant::now(),
         pending_callbacks: Vec::new(),
@@ -365,6 +377,9 @@ pub fn run(
             },
         )
         .map_err(|e| anyhow::anyhow!("failed to insert frame timer: {e}"))?;
+
+    // Start XWayland so X11 apps can run (best-effort; needs the Xwayland binary).
+    xwayland::setup(&handle, &dh);
 
     log::info!("focuswm listening on {runtime_dir}/{socket_name}");
     let _ = events.send(Event::Ready {

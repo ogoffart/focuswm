@@ -18,6 +18,8 @@ impl FocusState {
             Command::CloseWindow(id) => {
                 if let Some(entry) = self.windows.values().find(|e| e.id == id) {
                     entry.toplevel.send_close();
+                } else if let Some(entry) = self.x11_windows.values().find(|e| e.id == id) {
+                    let _ = entry.surface.close();
                 }
             }
             Command::FocusWindow(id) => self.focus_window(id),
@@ -177,6 +179,10 @@ impl FocusState {
                 state.size = Some((width.max(1), height.max(1)).into());
             });
             entry.toplevel.send_configure();
+        } else if let Some(entry) = self.x11_windows.values().find(|e| e.id == id) {
+            let mut geo = entry.surface.geometry();
+            geo.size = (width.max(1), height.max(1)).into();
+            let _ = entry.surface.configure(geo);
         }
     }
 

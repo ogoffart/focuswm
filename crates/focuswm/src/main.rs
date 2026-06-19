@@ -632,11 +632,10 @@ fn main() -> anyhow::Result<()> {
                         runtime_dir,
                         ..
                     } => {
-                        *spawn_env.borrow_mut() = SpawnEnv {
-                            wayland_display: socket_name,
-                            runtime_dir,
-                        };
-                        log::info!("compositor ready: {:?}", spawn_env.borrow());
+                        let mut env = spawn_env.borrow_mut();
+                        env.wayland_display = socket_name;
+                        env.runtime_dir = runtime_dir;
+                        log::info!("compositor ready: {env:?}");
                     }
                     Event::WindowAdded(id) => {
                         shared.borrow_mut().meta.entry(id.0).or_default();
@@ -718,6 +717,10 @@ fn main() -> anyhow::Result<()> {
                                 dirty_windows = true;
                             }
                         }
+                    }
+                    Event::XwaylandReady { display } => {
+                        spawn_env.borrow_mut().x_display = Some(display);
+                        log::info!("xwayland ready: DISPLAY=:{display}");
                     }
                     Event::PopupBuffer { .. } | Event::PopupRemoved(_) => {
                         // Popups are a later milestone; ignore for now.
@@ -1143,6 +1146,33 @@ mod tests {
         assert_eq!(evdev_keycode(" "), Some((57, false)));
         assert_eq!(evdev_keycode("\u{000a}"), Some((28, false)));
         assert_eq!(evdev_keycode("\u{0008}"), Some((14, false)));
+    }
+
+    #[test]
+    fn evdev_arrows_and_nav() {
+        assert_eq!(evdev_keycode("\u{F700}"), Some((103, false))); // Up
+        assert_eq!(evdev_keycode("\u{F703}"), Some((106, false))); // Right
+        assert_eq!(evdev_keycode("\u{F729}"), Some((102, false))); // Home
+        assert_eq!(evdev_keycode("\u{007f}"), Some((111, false))); // Delete
+    }
+
+    #[test]
+    fn evdev_function_keys() {
+        assert_eq!(evdev_keycode("\u{F704}"), Some((59, false))); // F1
+        assert_eq!(evdev_keycode("\u{F70D}"), Some((68, false))); // F10
+        assert_eq!(evdev_keycode("\u{F70E}"), Some((87, false))); // F11
+        assert_eq!(evdev_keycode("\u{F70F}"), Some((88, false))); // F12
+    }
+
+    #[test]
+    fn fmt_dur_formats_hours_and_minutes() {
+        assert_eq!(fmt_dur(0), "0m");
+        assert_eq!(fmt_dur(90), "1m");
+        assert_eq!(fmt_dur(3600), "1h 0m");
+        assert_eq!(fmt_dur(3660), "1h 1m");
+        assert_eq!(fmt_short(0), "");
+        assert_eq!(fmt_short(120), "2m");
+        assert_eq!(fmt_short(7200), "2h");
     }
 
     #[test]

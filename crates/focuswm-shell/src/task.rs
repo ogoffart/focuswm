@@ -618,6 +618,30 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_excludes_out_of_range_days() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.set_date("2024-03-10");
+        list.set_active(a, 0);
+        list.flush(120); // 2 min on 2024-03-10
+        list.set_date("2024-03-20");
+        list.flush(180); // 1 min on 2024-03-20
+        // Range covering only the first day.
+        let agg = list.time_log().aggregate("2024-03-01", "2024-03-15");
+        assert_eq!(agg.total, 120);
+        // Empty range.
+        let none = list.time_log().aggregate("2025-01-01", "2025-12-31");
+        assert_eq!(none.total, 0);
+        assert!(none.by_category.is_empty());
+    }
+
+    #[test]
+    fn default_idle_minutes_is_five() {
+        assert_eq!(super::default_idle_minutes(), 5);
+        assert_eq!(Settings::default().idle_minutes, 5);
+    }
+
+    #[test]
     fn pause_stops_accrual_and_resume_restarts_it() {
         let mut list = TaskList::new();
         let a = list.add_task("A", "work");

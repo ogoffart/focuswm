@@ -9,6 +9,8 @@ use std::process::Command;
 pub struct SpawnEnv {
     pub wayland_display: String,
     pub runtime_dir: String,
+    /// X11 display number from XWayland (e.g. `:1`), once it is ready.
+    pub x_display: Option<u32>,
 }
 
 /// Find a terminal emulator, preferring Wayland-native ones. Returns the program
@@ -59,8 +61,16 @@ pub fn spawn(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>) -> Result<(), St
         .env("XDG_RUNTIME_DIR", &env.runtime_dir)
         // Prefer the Wayland backend in toolkits that autodetect.
         .env("GDK_BACKEND", "wayland")
-        .env("QT_QPA_PLATFORM", "wayland")
-        .env_remove("DISPLAY");
+        .env("QT_QPA_PLATFORM", "wayland");
+    // Point X11-only apps at our XWayland server, if it's up.
+    match env.x_display {
+        Some(n) => {
+            command.env("DISPLAY", format!(":{n}"));
+        }
+        None => {
+            command.env_remove("DISPLAY");
+        }
+    }
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }

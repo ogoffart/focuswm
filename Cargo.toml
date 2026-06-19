@@ -37,6 +37,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "desktop",
     "renderer_gl",
     "backend_egl",
+    "xwayland",
 ] }
 
 calloop = "0.14"

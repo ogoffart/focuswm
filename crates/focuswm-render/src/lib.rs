@@ -135,4 +135,33 @@ mod tests {
         assert_eq!(&dst[12..16], &[9, 9, 9, 255]);
         assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
     }
+
+    #[test]
+    fn blit_clips_negative_offset() {
+        // 2x2 source placed at (-1,-1): only its bottom-right pixel lands at (0,0).
+        let mut dst = vec![0u8; 2 * 2 * 4];
+        let src = vec![255u8; 2 * 2 * 4];
+        blit_over(&mut dst, 2, 2, -1, -1, &src, 2, 2);
+        assert_eq!(&dst[0..4], &[255, 255, 255, 255]);
+        assert_eq!(&dst[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn blit_alpha_blends_halfway() {
+        let mut dst = vec![0u8, 0, 0, 255]; // opaque black, 1px
+        let src = [255u8, 255, 255, 128]; // ~50% white
+        blit_over(&mut dst, 1, 1, 0, 0, &src, 1, 1);
+        // ~50% blend toward white.
+        assert!(dst[0] > 120 && dst[0] < 135);
+        assert_eq!(dst[3], 255);
+    }
+
+    #[test]
+    fn convert_truncated_buffer_leaves_zeroes() {
+        // Claim 2x2 but provide only one row of data.
+        let src = [1, 2, 3, 4, 5, 6, 7, 8];
+        let out = convert_to_rgba(&src, 2, 2, 8, ShmFormat::Argb8888);
+        assert_eq!(&out[0..8], &[3, 2, 1, 4, 7, 6, 5, 8]);
+        assert_eq!(&out[8..16], &[0, 0, 0, 0, 0, 0, 0, 0]);
+    }
 }
