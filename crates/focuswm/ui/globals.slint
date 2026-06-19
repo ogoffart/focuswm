@@ -31,6 +31,7 @@ export global Logic {
     callback open-terminal();
     // Window management / input forwarding.
     callback close-window(int /* id */);
+    callback focus-window(int /* id */);
     callback pointer-moved(int /* id */, length /* x */, length /* y */);
     callback pointer-button(int /* id */, length /* x */, length /* y */, int /* btn */, bool /* pressed */);
     callback key-event(string /* text */, bool /* ctrl */, bool /* alt */, bool /* shift */, bool /* pressed */);

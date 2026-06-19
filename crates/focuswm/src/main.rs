@@ -337,6 +337,13 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    ui.global::<Logic>().on_focus_window({
+        let cmd_tx = cmd_tx.clone();
+        move |id| {
+            let _ = cmd_tx.send(Command::FocusWindow(WindowId(id as u64)));
+        }
+    });
+
     ui.global::<Logic>().on_pointer_moved({
         let cmd_tx = cmd_tx.clone();
         move |id, x, y| {

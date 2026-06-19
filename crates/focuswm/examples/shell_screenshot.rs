@@ -43,6 +43,15 @@ fn save(ui: &Desktop, window: &MinimalSoftwareWindow, size: PhysicalSize, name: 
     println!("wrote {name} ({}x{})", buffer.width(), buffer.height());
 }
 
+/// A solid-colour image, standing in for a client window's texture.
+fn solid_image(r: u8, g: u8, b: u8) -> slint::Image {
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(16, 16);
+    for px in buf.make_mut_slice() {
+        *px = slint::Rgba8Pixel { r, g, b, a: 255 };
+    }
+    slint::Image::from_rgba8(buf)
+}
+
 fn main() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform {
@@ -78,6 +87,26 @@ fn main() {
     ];
     ui.global::<AppData>()
         .set_tasks(ModelRc::from(Rc::new(VecModel::from(tasks))));
+
+    // A couple of sample windows for the active task, with solid-colour textures.
+    let windows = vec![
+        WindowTile {
+            id: 10,
+            title: "nvim — auth.rs".into(),
+            texture: solid_image(40, 42, 54),
+            width: 800.0,
+            height: 600.0,
+        },
+        WindowTile {
+            id: 11,
+            title: "cargo test".into(),
+            texture: solid_image(24, 24, 37),
+            width: 800.0,
+            height: 600.0,
+        },
+    ];
+    ui.global::<AppData>()
+        .set_windows(ModelRc::from(Rc::new(VecModel::from(windows))));
     ui.global::<AppData>().set_active_task(0);
     ui.global::<AppData>().set_active_name("Fix login bug".into());
     ui.global::<AppData>().set_categories(ModelRc::from(Rc::new(VecModel::from(
