@@ -88,4 +88,8 @@ fn main() {
     ))));
 
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_desktop.png");
+
+    // Same scene with the creation wizard open.
+    ui.set_wizard_open(true);
+    save(&ui, &window, PhysicalSize::new(1280, 800), "shot_wizard.png");
 }

@@ -62,7 +62,7 @@ export component Desktop inherits Window {
     preferred-height: 800px;
     background: Theme.bg;
 
-    property <bool> wizard-open: false;
+    in-out property <bool> wizard-open: false;
     property <bool> has-active: AppData.active-task >= 0;
 
     HorizontalLayout {
