@@ -29,3 +29,6 @@ slint-build.workspace = true
 
 [dev-dependencies]
 image.workspace = true
+# Slint testing backend for headless UI interaction tests (same git rev as slint).
+i-slint-backend-testing = { git = "https://github.com/slint-ui/slint.git", branch = "master" }
+i-slint-core = { git = "https://github.com/slint-ui/slint.git", branch = "master" }

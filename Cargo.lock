@@ -1401,6 +1401,8 @@ dependencies = [
  "focuswm-shell",
  "focuswm-wayland",
  "glow",
+ "i-slint-backend-testing",
+ "i-slint-core",
  "image",
  "log",
  "serde",
