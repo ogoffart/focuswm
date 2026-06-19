@@ -1,0 +1,20 @@
+// Shared data structures mirrored from Rust (focuswm-shell / main.rs).
+
+// One task = one virtual desktop, as shown in the sidebar.
+export struct TaskItem {
+    id: int,
+    name: string,
+    category: string,
+    // Accumulated focus time, in whole minutes.
+    minutes: int,
+    has-notification: bool,
+}
+
+// One client window, rendered as a GL texture in the active task's view.
+export struct WindowTile {
+    id: int,
+    title: string,
+    texture: image,
+    width: length,
+    height: length,
+}

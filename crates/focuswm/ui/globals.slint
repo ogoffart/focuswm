@@ -1,0 +1,35 @@
+import { TaskItem, WindowTile } from "types.slint";
+
+// State the host (Rust) pushes into the UI.
+export global AppData {
+    in property <[TaskItem]> tasks;
+    // Id of the active task, or -1 when none.
+    in property <int> active-task: -1;
+    // Name of the active task, resolved host-side for the header.
+    in property <string> active-name;
+    // Windows belonging to the active task (already filtered host-side).
+    in property <[WindowTile]> windows;
+    // Available categories for the wizard's dropdown.
+    in property <[string]> categories;
+    // Command used to label the "Open browser" action, for the tooltip.
+    in property <string> browser-name: "browser";
+}
+
+// Actions the UI invokes; the host handles them.
+export global Logic {
+    // Wizard "Create": name, category, branch, repo (branch/repo may be empty).
+    callback create-task(string, string, string, string);
+    // Sidebar interactions.
+    callback switch-task(int /* id */);
+    callback delete-task(int /* id */);
+    // Reorder: move the task with this id by `delta` (-1 up, +1 down).
+    callback move-task(int /* id */, int /* delta */);
+    // Task header actions.
+    callback open-browser();
+    callback open-terminal();
+    // Window management / input forwarding.
+    callback close-window(int /* id */);
+    callback pointer-moved(int /* id */, length /* x */, length /* y */);
+    callback pointer-button(int /* id */, length /* x */, length /* y */, int /* btn */, bool /* pressed */);
+    callback key-event(string /* text */, bool /* ctrl */, bool /* alt */, bool /* shift */, bool /* pressed */);
+}

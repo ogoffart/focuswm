@@ -1,0 +1,360 @@
+//! The focuswm Wayland-protocol engine, built on Smithay.
+//!
+//! This crate is rendering-agnostic: it owns the Wayland display, socket, client
+//! state and protocol handlers, and runs them on a `calloop` event loop. It does
+//! **not** present anything — Slint owns output/input/GL in the binary crate.
+//! State updates flow out to the UI thread over an [`Event`] channel; the UI
+//! drives input and window management back over a [`Command`] channel.
+
+use std::sync::mpsc::Sender;
+use std::time::Duration;
+
+use anyhow::Context as _;
+use smithay::input::keyboard::XkbConfig;
+use smithay::input::SeatState;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+use smithay::reexports::wayland_server::{BindError, Display, ListeningSocket};
+use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shm::ShmState;
+
+mod handlers;
+mod input;
+mod state;
+
+pub use focuswm_shell::WindowId;
+pub use state::FocusState;
+
+/// Default output size (logical px) when starting nested.
+pub const OUTPUT_W: i32 = 1280;
+pub const OUTPUT_H: i32 = 800;
+
+/// Events emitted by the compositor thread for the UI thread to consume.
+pub enum Event {
+    /// The compositor is up and accepting clients on `socket_name`.
+    Ready {
+        socket_name: String,
+        /// Directory holding the socket; launched apps need it as their
+        /// `XDG_RUNTIME_DIR` to connect.
+        runtime_dir: String,
+        width: i32,
+        height: i32,
+    },
+    WindowAdded(WindowId),
+    WindowRemoved(WindowId),
+    /// A window committed a new frame: tightly-packed RGBA8 of `width`x`height`,
+    /// plus its current title and app-id.
+    WindowBuffer {
+        id: WindowId,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        title: String,
+        app_id: String,
+    },
+    /// A popup committed a frame, drawn at offset `(ox, oy)` from `parent`.
+    PopupBuffer {
+        id: WindowId,
+        parent: Option<WindowId>,
+        ox: i32,
+        oy: i32,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
+    PopupRemoved(WindowId),
+    /// The output was resized (echoed back after a `Command::ResizeOutput`).
+    OutputResized { width: i32, height: i32 },
+}
+
+impl std::fmt::Debug for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Event::Ready {
+                socket_name,
+                runtime_dir,
+                width,
+                height,
+            } => f
+                .debug_struct("Ready")
+                .field("socket_name", socket_name)
+                .field("runtime_dir", runtime_dir)
+                .field("width", width)
+                .field("height", height)
+                .finish(),
+            Event::WindowAdded(id) => f.debug_tuple("WindowAdded").field(id).finish(),
+            Event::WindowRemoved(id) => f.debug_tuple("WindowRemoved").field(id).finish(),
+            Event::WindowBuffer {
+                id,
+                width,
+                height,
+                title,
+                app_id,
+                ..
+            } => f
+                .debug_struct("WindowBuffer")
+                .field("id", id)
+                .field("width", width)
+                .field("height", height)
+                .field("title", title)
+                .field("app_id", app_id)
+                .finish_non_exhaustive(),
+            Event::PopupBuffer {
+                id,
+                parent,
+                width,
+                height,
+                ..
+            } => f
+                .debug_struct("PopupBuffer")
+                .field("id", id)
+                .field("parent", parent)
+                .field("width", width)
+                .field("height", height)
+                .finish_non_exhaustive(),
+            Event::PopupRemoved(id) => f.debug_tuple("PopupRemoved").field(id).finish(),
+            Event::OutputResized { width, height } => f
+                .debug_struct("OutputResized")
+                .field("width", width)
+                .field("height", height)
+                .finish(),
+        }
+    }
+}
+
+/// Commands sent from the UI thread to the compositor.
+#[derive(Debug)]
+pub enum Command {
+    /// Ask a window to close (sends `xdg_toplevel.close`).
+    CloseWindow(WindowId),
+    /// Give keyboard focus to a window.
+    FocusWindow(WindowId),
+    /// Pointer moved to surface-local `(x, y)` over the given window.
+    PointerMotion { id: WindowId, x: f64, y: f64 },
+    /// Pointer button (evdev code) pressed/released over the given window.
+    PointerButton {
+        id: WindowId,
+        button: u32,
+        pressed: bool,
+    },
+    /// Pointer left all client windows.
+    PointerLeave,
+    /// Scroll over the given window.
+    PointerAxis { id: WindowId, dx: f64, dy: f64 },
+    /// A key (evdev keycode) pressed/released for the focused window.
+    Key { keycode: u32, pressed: bool },
+    /// Resize a window to the given size (sends an xdg configure).
+    ResizeWindow {
+        id: WindowId,
+        width: i32,
+        height: i32,
+    },
+    /// The output (host window) was resized.
+    ResizeOutput { width: i32, height: i32 },
+    /// Dismiss all open popups (e.g. a click landed outside them).
+    DismissPopups,
+}
+
+/// Re-exported so the UI crate can hold the sending half.
+pub use smithay::reexports::calloop::channel::Sender as CommandSender;
+
+/// Create the command channel. The [`CommandSender`] stays on the UI thread; the
+/// channel is handed to [`run`].
+pub fn command_channel() -> (
+    CommandSender<Command>,
+    smithay::reexports::calloop::channel::Channel<Command>,
+) {
+    smithay::reexports::calloop::channel::channel()
+}
+
+/// Run the Wayland compositor event loop on a dedicated thread; blocks until the
+/// loop is torn down.
+pub fn run(
+    events: Sender<Event>,
+    commands: smithay::reexports::calloop::channel::Channel<Command>,
+) -> anyhow::Result<()> {
+    let mut event_loop: EventLoop<FocusState> =
+        EventLoop::try_new().context("failed to create calloop event loop")?;
+    let display: Display<FocusState> = Display::new().context("failed to create wl_display")?;
+    let dh = display.handle();
+
+    let compositor_state = CompositorState::new::<FocusState>(&dh);
+    let xdg_shell_state = XdgShellState::new::<FocusState>(&dh);
+    let shm_state = ShmState::new::<FocusState>(&dh, Vec::new());
+    let output_manager_state = OutputManagerState::new_with_xdg_output::<FocusState>(&dh);
+    let mut seat_state = SeatState::<FocusState>::new();
+    let data_device_state = DataDeviceState::new::<FocusState>(&dh);
+
+    let mut seat = seat_state.new_wl_seat(&dh, "seat0");
+    seat.add_keyboard(XkbConfig::default(), 200, 25)
+        .context("failed to add keyboard to seat")?;
+    seat.add_pointer();
+
+    // Advertise a single output (many clients refuse to map without one).
+    let output = smithay::output::Output::new(
+        "focuswm-0".to_string(),
+        smithay::output::PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: smithay::output::Subpixel::Unknown,
+            make: "focuswm".into(),
+            model: "virtual".into(),
+        },
+    );
+    output.create_global::<FocusState>(&dh);
+    let mode = smithay::output::Mode {
+        size: (OUTPUT_W, OUTPUT_H).into(),
+        refresh: 60_000,
+    };
+    output.change_current_state(Some(mode), None, None, Some((0, 0).into()));
+    output.set_preferred(mode);
+
+    let mut state = FocusState {
+        display_handle: dh.clone(),
+        loop_signal: event_loop.get_signal(),
+        compositor_state,
+        xdg_shell_state,
+        shm_state,
+        output_manager_state,
+        seat_state,
+        data_device_state,
+        seat,
+        output,
+        current_output_size: (OUTPUT_W, OUTPUT_H),
+        next_window_id: 0,
+        windows: std::collections::HashMap::new(),
+        popups: std::collections::HashMap::new(),
+        surface_pixels: std::collections::HashMap::new(),
+        start_time: std::time::Instant::now(),
+        pending_callbacks: Vec::new(),
+        events: events.clone(),
+    };
+
+    let (socket, socket_name, runtime_dir) =
+        bind_socket().context("failed to create wayland socket")?;
+    let handle = event_loop.handle();
+
+    handle
+        .insert_source(
+            Generic::new(socket, Interest::READ, Mode::Level),
+            move |_, socket, state: &mut FocusState| {
+                while let Some(stream) = socket.accept()? {
+                    match state
+                        .display_handle
+                        .insert_client(stream, state::ClientState::arc())
+                    {
+                        Ok(_) => log::info!("wayland: client connected"),
+                        Err(err) => log::warn!("failed to accept client: {err}"),
+                    }
+                }
+                Ok::<_, std::io::Error>(PostAction::Continue)
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("failed to insert socket source: {e}"))?;
+
+    handle
+        .insert_source(
+            Generic::new(display, Interest::READ, Mode::Level),
+            |_, display, state: &mut FocusState| {
+                // SAFETY: the display is not dropped while the loop runs.
+                unsafe {
+                    display
+                        .get_mut()
+                        .dispatch_clients(state)
+                        .map_err(std::io::Error::other)?;
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("failed to insert display source: {e}"))?;
+
+    handle
+        .insert_source(commands, |event, _, state: &mut FocusState| {
+            if let smithay::reexports::calloop::channel::Event::Msg(command) = event {
+                state.handle_command(command);
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("failed to insert command source: {e}"))?;
+
+    // Fire queued frame callbacks at ~60Hz so clients pace their rendering.
+    handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(16)),
+            |_, _, state: &mut FocusState| {
+                let now = state.millis_since_start();
+                for callback in state.pending_callbacks.drain(..) {
+                    callback.done(now);
+                }
+                if let Err(err) = state.display_handle.flush_clients() {
+                    log::warn!("failed to flush clients: {err}");
+                }
+                TimeoutAction::ToDuration(Duration::from_millis(16))
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("failed to insert frame timer: {e}"))?;
+
+    log::info!("focuswm listening on {runtime_dir}/{socket_name}");
+    let _ = events.send(Event::Ready {
+        socket_name,
+        runtime_dir,
+        width: OUTPUT_W,
+        height: OUTPUT_H,
+    });
+
+    event_loop
+        .run(None, &mut state, |state| {
+            if let Err(err) = state.display_handle.flush_clients() {
+                log::warn!("failed to flush clients: {err}");
+            }
+        })
+        .context("event loop terminated unexpectedly")?;
+
+    Ok(())
+}
+
+/// Bind the compositor's listening socket. Tries `XDG_RUNTIME_DIR` first, then a
+/// private `focuswm-<uid>` directory under the temp dir.
+fn bind_socket() -> anyhow::Result<(ListeningSocket, String, String)> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::PathBuf;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let path = PathBuf::from(&dir);
+        if path.is_absolute() {
+            candidates.push(path);
+        }
+    }
+    let uid = std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0);
+    let fallback = std::env::temp_dir().join(format!("focuswm-{uid}"));
+    candidates.push(fallback.clone());
+
+    let mut last_err: Option<String> = None;
+    for dir in candidates {
+        if dir == fallback {
+            if let Err(err) = std::fs::create_dir_all(&dir) {
+                last_err = Some(format!("create {}: {err}", dir.display()));
+                continue;
+            }
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        for n in 1..33u32 {
+            let name = format!("wayland-{n}");
+            match ListeningSocket::bind_absolute(dir.join(&name)) {
+                Ok(socket) => return Ok((socket, name, dir.to_string_lossy().into_owned())),
+                Err(BindError::AlreadyInUse) => continue,
+                Err(err) => {
+                    last_err = Some(format!("{}: {err}", dir.display()));
+                    break;
+                }
+            }
+        }
+    }
+    anyhow::bail!(
+        "no writable runtime directory for the wayland socket ({})",
+        last_err.unwrap_or_else(|| "unknown".into())
+    )
+}

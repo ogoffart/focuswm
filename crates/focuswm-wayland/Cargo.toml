@@ -1,0 +1,14 @@
+[package]
+name = "focuswm-wayland"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+focuswm-shell = { workspace = true }
+focuswm-render = { workspace = true }
+smithay = { workspace = true }
+calloop = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
