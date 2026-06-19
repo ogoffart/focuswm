@@ -1,19 +1,32 @@
 import { TaskItem, WindowTile } from "types.slint";
 
-// One row of the time report (a category, project, or day).
+// One row of the time report (a category or project).
 export struct ReportRow {
     label: string,
     today: string,
     week: string,
 }
 
-// Report figures, computed host-side and pushed in when the report opens.
+// One bar of the weekly graph.
+export struct DayBar {
+    label: string,    // weekday, e.g. "Mon"
+    value: string,    // formatted time, e.g. "2h"
+    fraction: float,  // 0..1 bar height relative to the busiest day
+    selected: bool,   // the currently selected day
+}
+
+// Report figures, computed host-side and pushed in when the report opens or the
+// selected day/week changes.
 export global ReportData {
-    in property <string> today-total: "0m";
+    in property <string> day-label: "—";    // selected day, e.g. "Thu Jun 19"
+    in property <string> week-label: "—";    // selected week range
+    in property <string> day-total: "0m";
     in property <string> week-total: "0m";
+    in property <[DayBar]> week-bars;
     in property <[ReportRow]> by-category;
     in property <[ReportRow]> by-project;
-    in property <[ReportRow]> daily;
+    // Whether navigating forward is allowed (can't go past today).
+    in property <bool> can-forward: false;
 }
 
 // Current settings values, pushed in when the settings dialog opens.
@@ -21,6 +34,7 @@ export global SettingsData {
     in property <string> terminal;
     in property <string> browser;
     in property <string> categories-csv;
+    in property <string> idle-minutes;
 }
 
 // State the host (Rust) pushes into the UI.
@@ -54,8 +68,16 @@ export global Logic {
     callback open-terminal();
     // Settings + report (host populates data and toggles the dialog).
     callback open-settings();
-    callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */);
+    callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */, string /* idle-minutes */);
     callback open-report();
+    // Lock screen (also raised automatically on idle).
+    callback lock();
+    callback unlock();
+    // Report navigation (changes the selected day; the week follows).
+    callback report-prev-day();
+    callback report-next-day();
+    callback report-prev-week();
+    callback report-next-week();
     // Window management / input forwarding.
     callback close-window(int /* id */);
     callback focus-window(int /* id */);

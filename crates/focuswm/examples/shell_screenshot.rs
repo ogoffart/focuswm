@@ -134,21 +134,30 @@ fn main() {
         ReportRow { label: "Review PR #128".into(), today: "30m".into(), week: "2h 30m".into() },
         ReportRow { label: "Read Wayland book".into(), today: "30m".into(), week: "3h 05m".into() },
     ];
-    let daily_rows = vec![
-        ReportRow { label: "2026-06-15".into(), today: "2h 10m".into(), week: "".into() },
-        ReportRow { label: "2026-06-16".into(), today: "3h 25m".into(), week: "".into() },
-        ReportRow { label: "2026-06-17".into(), today: "1h 50m".into(), week: "".into() },
-        ReportRow { label: "2026-06-18".into(), today: "2h 33m".into(), week: "".into() },
-        ReportRow { label: "2026-06-19".into(), today: "1h 42m".into(), week: "".into() },
+    let bar = |label: &str, value: &str, fraction: f32, selected: bool| DayBar {
+        label: label.into(),
+        value: value.into(),
+        fraction,
+        selected,
+    };
+    let bars = vec![
+        bar("Mon", "2h", 0.62, false),
+        bar("Tue", "3h", 1.0, false),
+        bar("Wed", "1h", 0.5, false),
+        bar("Thu", "2h", 0.74, false),
+        bar("Fri", "1h", 0.5, true),
+        bar("Sat", "", 0.0, false),
+        bar("Sun", "", 0.0, false),
     ];
-    ui.global::<ReportData>().set_today_total("1h 42m".into());
-    ui.global::<ReportData>().set_week_total("10h 30m".into());
-    ui.global::<ReportData>()
-        .set_by_category(ModelRc::from(Rc::new(VecModel::from(cat_rows))));
-    ui.global::<ReportData>()
-        .set_by_project(ModelRc::from(Rc::new(VecModel::from(proj_rows))));
-    ui.global::<ReportData>()
-        .set_daily(ModelRc::from(Rc::new(VecModel::from(daily_rows))));
+    let rd = ui.global::<ReportData>();
+    rd.set_day_label("Fri Jun 19".into());
+    rd.set_week_label("Jun 15 – Jun 21".into());
+    rd.set_day_total("1h 42m".into());
+    rd.set_week_total("10h 30m".into());
+    rd.set_can_forward(true);
+    rd.set_week_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
+    rd.set_by_category(ModelRc::from(Rc::new(VecModel::from(cat_rows))));
+    rd.set_by_project(ModelRc::from(Rc::new(VecModel::from(proj_rows))));
     ui.set_report_open(true);
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_report.png");
     ui.set_report_open(false);
@@ -158,6 +167,12 @@ fn main() {
     ui.global::<SettingsData>().set_browser("firefox".into());
     ui.global::<SettingsData>()
         .set_categories_csv("work, personal, meeting, learning, other".into());
+    ui.global::<SettingsData>().set_idle_minutes("5".into());
     ui.set_settings_open(true);
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_settings.png");
+    ui.set_settings_open(false);
+
+    // The lock screen.
+    ui.set_locked(true);
+    save(&ui, &window, PhysicalSize::new(1280, 800), "shot_lock.png");
 }

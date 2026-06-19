@@ -1,0 +1,45 @@
+import { Theme } from "theme.slint";
+import { Logic } from "globals.slint";
+import { Button } from "std-widgets.slint";
+
+// Opaque lock screen. Covers the whole window so no input reaches clients while
+// locked; any click or key press unlocks. Time tracking is paused meanwhile.
+export component LockScreen inherits Rectangle {
+    background: #11111b;
+
+    // Eat all pointer input.
+    TouchArea {
+        clicked => { Logic.unlock(); }
+    }
+
+    // Eat keys; any key unlocks.
+    fs := FocusScope {
+        key-pressed(e) => {
+            Logic.unlock();
+            accept
+        }
+    }
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 14px;
+        Text { text: "🔒"; font-size: 52px; horizontal-alignment: center; }
+        Text {
+            text: "focuswm is locked";
+            color: Theme.text;
+            font-size: 22px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Time tracking is paused while you're away";
+            color: Theme.text-dim;
+            font-size: 14px;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button { text: "Unlock"; primary: true; clicked => { Logic.unlock(); } }
+        }
+    }
+}

@@ -238,14 +238,20 @@ export component Sidebar inherits Rectangle {
             }
         }
 
-        // Always-available app menu: settings + time report.
+        // Always-available app menu: lock, settings, time report.
         HorizontalLayout {
             vertical-stretch: 0;
             spacing: 6px;
             Button {
                 height: 32px;
-                text: "⚙  Settings";
-                horizontal-stretch: 1;
+                width: 40px;
+                text: "🔒";
+                clicked => { Logic.lock(); }
+            }
+            Button {
+                height: 32px;
+                width: 40px;
+                text: "⚙";
                 clicked => { Logic.open-settings(); }
             }
             Button {

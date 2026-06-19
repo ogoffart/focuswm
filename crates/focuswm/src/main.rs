@@ -85,6 +85,17 @@ fn main() -> anyhow::Result<()> {
     let start = Instant::now();
     let now_secs = move || start.elapsed().as_secs();
 
+    // Idle detection: any user input refreshes `last_activity`; the tracking
+    // timer pauses accrual after the configured idle timeout.
+    let last_activity = Rc::new(RefCell::new(Instant::now()));
+    let mark_active: Rc<dyn Fn()> = {
+        let last_activity = last_activity.clone();
+        Rc::new(move || *last_activity.borrow_mut() = Instant::now())
+    };
+
+    // The day the report is focused on (the week follows it). Defaults to today.
+    let report_anchor = Rc::new(RefCell::new(Local::now().date_naive()));
+
     let tasks_model = Rc::new(VecModel::<TaskItem>::default());
     let windows_model = Rc::new(VecModel::<WindowTile>::default());
     ui.global::<AppData>()
@@ -264,8 +275,10 @@ fn main() -> anyhow::Result<()> {
         let spawn_env = spawn_env.clone();
         let now_secs = now_secs.clone();
         let terminal_cmd = terminal_cmd.clone();
+        let mark_active = mark_active.clone();
         let weak = weak.clone();
         move |name, category, branch, repo| {
+            mark_active();
             {
                 let mut list = tasks.borrow_mut();
                 list.set_date(&today());
@@ -295,7 +308,9 @@ fn main() -> anyhow::Result<()> {
         let rebuild_windows = rebuild_windows.clone();
         let now_secs = now_secs.clone();
         let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
         move |id| {
+            mark_active();
             {
                 let mut list = tasks.borrow_mut();
                 list.set_date(&today());
@@ -317,7 +332,9 @@ fn main() -> anyhow::Result<()> {
         let rebuild_windows = rebuild_windows.clone();
         let now_secs = now_secs.clone();
         let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
         move |id| {
+            mark_active();
             // Close that task's windows before forgetting them.
             let windows = tasks.borrow().windows_for(TaskId(id as u64));
             for w in windows {
@@ -337,7 +354,9 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_move_task({
         let tasks = tasks.clone();
         let refresh_tasks = refresh_tasks.clone();
+        let mark_active = mark_active.clone();
         move |id, delta| {
+            mark_active();
             {
                 let mut list = tasks.borrow_mut();
                 if let Some(from) = list.tasks().iter().position(|t| t.id.0 == id as u64) {
@@ -355,22 +374,32 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_open_terminal({
         let spawn_env = spawn_env.clone();
         let terminal_cmd = terminal_cmd.clone();
+        let mark_active = mark_active.clone();
         let weak = weak.clone();
-        move || spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &weak)
+        move || {
+            mark_active();
+            spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &weak);
+        }
     });
 
     ui.global::<Logic>().on_open_browser({
         let spawn_env = spawn_env.clone();
         let browser_cmd = browser_cmd.clone();
+        let mark_active = mark_active.clone();
         let weak = weak.clone();
-        move || spawn_client(&browser_cmd(), &spawn_env.borrow(), None, &weak)
+        move || {
+            mark_active();
+            spawn_client(&browser_cmd(), &spawn_env.borrow(), None, &weak);
+        }
     });
 
     // Settings dialog: populate fields and open.
     ui.global::<Logic>().on_open_settings({
         let tasks = tasks.clone();
+        let mark_active = mark_active.clone();
         let weak = weak.clone();
         move || {
+            mark_active();
             let Some(ui) = weak.upgrade() else { return };
             let list = tasks.borrow();
             let s = list.settings();
@@ -378,6 +407,8 @@ fn main() -> anyhow::Result<()> {
             ui.global::<SettingsData>().set_browser(s.browser.clone().into());
             ui.global::<SettingsData>()
                 .set_categories_csv(s.categories.join(", ").into());
+            ui.global::<SettingsData>()
+                .set_idle_minutes(s.idle_minutes.to_string().into());
             ui.set_settings_open(true);
         }
     });
@@ -385,8 +416,10 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_save_settings({
         let tasks = tasks.clone();
         let apply_categories = apply_categories.clone();
+        let mark_active = mark_active.clone();
         let weak = weak.clone();
-        move |terminal, browser, categories_csv| {
+        move |terminal, browser, categories_csv, idle_minutes| {
+            mark_active();
             let mut cats: Vec<String> = categories_csv
                 .split(',')
                 .map(|c| c.trim().to_string())
@@ -395,10 +428,15 @@ fn main() -> anyhow::Result<()> {
             if cats.is_empty() {
                 cats = focuswm_shell::default_categories();
             }
+            let idle = idle_minutes
+                .trim()
+                .parse::<u64>()
+                .unwrap_or_else(|_| focuswm_shell::default_idle_minutes());
             tasks.borrow_mut().set_settings(Settings {
                 terminal: terminal.to_string(),
                 browser: browser.to_string(),
                 categories: cats,
+                idle_minutes: idle,
             });
             persist::save(&tasks.borrow());
             apply_categories();
@@ -409,8 +447,56 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Time report: flush the running interval, compute figures, and open.
+    // Time report: flush the running interval, reset to today, compute, and open.
     ui.global::<Logic>().on_open_report({
+        let tasks = tasks.clone();
+        let now_secs = now_secs.clone();
+        let report_anchor = report_anchor.clone();
+        let mark_active = mark_active.clone();
+        let weak = weak.clone();
+        move || {
+            mark_active();
+            {
+                let mut list = tasks.borrow_mut();
+                list.set_date(&today());
+                list.flush(now_secs());
+            }
+            persist::save(&tasks.borrow());
+            *report_anchor.borrow_mut() = Local::now().date_naive();
+            if let Some(ui) = weak.upgrade() {
+                build_report(&tasks.borrow(), &ui, *report_anchor.borrow());
+                ui.set_report_open(true);
+            }
+        }
+    });
+
+    // Report navigation: shift the anchor day/week and rebuild (clamped to today).
+    {
+        let make_nav = |delta_days: i64| {
+            let tasks = tasks.clone();
+            let report_anchor = report_anchor.clone();
+            let mark_active = mark_active.clone();
+            let weak = weak.clone();
+            move || {
+                mark_active();
+                let today_date = Local::now().date_naive();
+                let mut anchor = report_anchor.borrow_mut();
+                let next = *anchor + ChronoDuration::days(delta_days);
+                // Don't navigate into the future.
+                *anchor = next.min(today_date);
+                if let Some(ui) = weak.upgrade() {
+                    build_report(&tasks.borrow(), &ui, *anchor);
+                }
+            }
+        };
+        ui.global::<Logic>().on_report_prev_day(make_nav(-1));
+        ui.global::<Logic>().on_report_next_day(make_nav(1));
+        ui.global::<Logic>().on_report_prev_week(make_nav(-7));
+        ui.global::<Logic>().on_report_next_week(make_nav(7));
+    }
+
+    // Lock: pause time tracking and raise the lock screen.
+    ui.global::<Logic>().on_lock({
         let tasks = tasks.clone();
         let now_secs = now_secs.clone();
         let weak = weak.clone();
@@ -419,32 +505,53 @@ fn main() -> anyhow::Result<()> {
                 let mut list = tasks.borrow_mut();
                 list.set_date(&today());
                 list.flush(now_secs());
+                list.pause();
             }
             persist::save(&tasks.borrow());
             if let Some(ui) = weak.upgrade() {
-                build_report(&tasks.borrow(), &ui);
-                ui.set_report_open(true);
+                ui.set_locked(true);
+            }
+        }
+    });
+
+    // Unlock: count this as activity, resume tracking, and hide the lock screen.
+    ui.global::<Logic>().on_unlock({
+        let tasks = tasks.clone();
+        let now_secs = now_secs.clone();
+        let mark_active = mark_active.clone();
+        let weak = weak.clone();
+        move || {
+            mark_active();
+            tasks.borrow_mut().resume(now_secs());
+            if let Some(ui) = weak.upgrade() {
+                ui.set_locked(false);
             }
         }
     });
 
     ui.global::<Logic>().on_close_window({
         let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
         move |id| {
+            mark_active();
             let _ = cmd_tx.send(Command::CloseWindow(WindowId(id as u64)));
         }
     });
 
     ui.global::<Logic>().on_focus_window({
         let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
         move |id| {
+            mark_active();
             let _ = cmd_tx.send(Command::FocusWindow(WindowId(id as u64)));
         }
     });
 
     ui.global::<Logic>().on_pointer_moved({
         let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
         move |id, x, y| {
+            mark_active();
             let _ = cmd_tx.send(Command::PointerMotion {
                 id: WindowId(id as u64),
                 x: x as f64,
@@ -455,7 +562,9 @@ fn main() -> anyhow::Result<()> {
 
     ui.global::<Logic>().on_pointer_button({
         let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
         move |id, x, y, btn, pressed| {
+            mark_active();
             let _ = cmd_tx.send(Command::PointerMotion {
                 id: WindowId(id as u64),
                 x: x as f64,
@@ -471,7 +580,9 @@ fn main() -> anyhow::Result<()> {
 
     ui.global::<Logic>().on_key_event({
         let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
         move |text, ctrl, alt, shift, pressed| {
+            mark_active();
             // Only act on press; emit a full modifier-wrapped tap (works for
             // typing; key-repeat arrives as further press events).
             if pressed {
@@ -576,20 +687,41 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // --- Periodic time-tracking flush + persist --------------------------------
+    // --- Periodic time-tracking flush + idle detection -------------------------
     let flush_timer = slint::Timer::default();
-    flush_timer.start(slint::TimerMode::Repeated, Duration::from_secs(30), {
+    flush_timer.start(slint::TimerMode::Repeated, Duration::from_secs(10), {
         let tasks = tasks.clone();
         let refresh_tasks = refresh_tasks.clone();
         let now_secs = now_secs.clone();
+        let last_activity = last_activity.clone();
+        let weak = weak.clone();
         move || {
-            {
+            let now = now_secs();
+            let idle_secs = last_activity.borrow().elapsed().as_secs();
+            let threshold = tasks.borrow().settings().idle_minutes.saturating_mul(60);
+            let became_idle = {
                 let mut list = tasks.borrow_mut();
                 list.set_date(&today());
-                list.flush(now_secs());
-            }
+                if threshold > 0 && idle_secs >= threshold {
+                    // Count up to the moment activity stopped, then pause.
+                    list.flush(now.saturating_sub(idle_secs));
+                    let was_running = !list.is_paused();
+                    list.pause();
+                    was_running
+                } else {
+                    list.resume(now);
+                    list.flush(now);
+                    false
+                }
+            };
             refresh_tasks();
             persist::save(&tasks.borrow());
+            // Raise the lock screen when we first go idle.
+            if became_idle {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_locked(true);
+                }
+            }
         }
     });
 
@@ -610,20 +742,6 @@ fn today() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// Monday of the current week, "YYYY-MM-DD".
-fn week_start() -> String {
-    let d = Local::now().date_naive();
-    let monday = d - ChronoDuration::days(d.weekday().num_days_from_monday() as i64);
-    monday.format("%Y-%m-%d").to_string()
-}
-
-/// `n` days ago, "YYYY-MM-DD".
-fn days_ago(n: i64) -> String {
-    (Local::now().date_naive() - ChronoDuration::days(n))
-        .format("%Y-%m-%d")
-        .to_string()
-}
-
 /// Format a duration in seconds as "Xh Ym" or "Ym".
 fn fmt_dur(secs: u64) -> String {
     let m = secs / 60;
@@ -631,6 +749,19 @@ fn fmt_dur(secs: u64) -> String {
         format!("{}h {}m", m / 60, m % 60)
     } else {
         format!("{m}m")
+    }
+}
+
+/// Short duration for the bar-graph labels: "2h", "30m", or "" for zero.
+fn fmt_short(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 {
+        format!("{h}h")
+    } else if m > 0 {
+        format!("{m}m")
+    } else {
+        String::new()
     }
 }
 
@@ -644,51 +775,71 @@ fn browser_label(list: &TaskList) -> String {
     }
 }
 
-/// Compute and publish the time-report figures (today, this week, last 7 days).
-fn build_report(list: &TaskList, ui: &Desktop) {
-    let today = today();
-    let week = week_start();
-    let seven = days_ago(6);
+/// Compute and publish the time-report figures for the selected `anchor` day:
+/// the day total, the containing week's total + per-day bar graph, and the
+/// by-category / by-project breakdowns (day + week columns).
+fn build_report(list: &TaskList, ui: &Desktop, anchor: chrono::NaiveDate) {
+    let fmt = |d: chrono::NaiveDate| d.format("%Y-%m-%d").to_string();
+    let day = fmt(anchor);
+    let monday = anchor - ChronoDuration::days(anchor.weekday().num_days_from_monday() as i64);
+    let sunday = monday + ChronoDuration::days(6);
     let log = list.time_log();
-    let today_agg = log.aggregate(&today, &today);
-    let week_agg = log.aggregate(&week, &today);
+    let day_agg = log.aggregate(&day, &day);
+    let week_agg = log.aggregate(&fmt(monday), &fmt(sunday));
 
-    // Build rows ordered by the week totals, with the matching today value.
-    let rows_of = |week_rows: &[(String, u64)], today_rows: &[(String, u64)]| -> Vec<ReportRow> {
+    // Rows ordered by the week totals, with the matching day value alongside.
+    let rows_of = |week_rows: &[(String, u64)], day_rows: &[(String, u64)]| -> Vec<ReportRow> {
         week_rows
             .iter()
             .map(|(label, wsecs)| {
-                let tsecs = today_rows
+                let dsecs = day_rows
                     .iter()
                     .find(|(l, _)| l == label)
                     .map(|(_, s)| *s)
                     .unwrap_or(0);
                 ReportRow {
                     label: label.clone().into(),
-                    today: fmt_dur(tsecs).into(),
+                    today: fmt_dur(dsecs).into(),
                     week: fmt_dur(*wsecs).into(),
                 }
             })
             .collect()
     };
-    let cats = rows_of(&week_agg.by_category, &today_agg.by_category);
-    let projects = rows_of(&week_agg.by_project, &today_agg.by_project);
-    let daily: Vec<ReportRow> = log
-        .daily_totals(&seven, &today)
-        .into_iter()
-        .map(|(date, secs)| ReportRow {
-            label: date.into(),
-            today: fmt_dur(secs).into(),
-            week: SharedString::new(),
+    let cats = rows_of(&week_agg.by_category, &day_agg.by_category);
+    let projects = rows_of(&week_agg.by_project, &day_agg.by_project);
+
+    // Weekly bar graph (Mon..Sun), scaled to the busiest day.
+    let day_secs: Vec<u64> = (0..7)
+        .map(|i| {
+            let d = fmt(monday + ChronoDuration::days(i));
+            log.aggregate(&d, &d).total
+        })
+        .collect();
+    let max = day_secs.iter().copied().max().unwrap_or(0).max(1);
+    let bars: Vec<DayBar> = (0..7)
+        .map(|i| {
+            let d = monday + ChronoDuration::days(i);
+            let secs = day_secs[i as usize];
+            DayBar {
+                label: d.format("%a").to_string().into(),
+                value: fmt_short(secs).into(),
+                fraction: secs as f32 / max as f32,
+                selected: d == anchor,
+            }
         })
         .collect();
 
     let rd = ui.global::<ReportData>();
-    rd.set_today_total(fmt_dur(today_agg.total).into());
+    rd.set_day_label(anchor.format("%a %b %d").to_string().into());
+    rd.set_week_label(
+        format!("{} – {}", monday.format("%b %d"), sunday.format("%b %d")).into(),
+    );
+    rd.set_day_total(fmt_dur(day_agg.total).into());
     rd.set_week_total(fmt_dur(week_agg.total).into());
+    rd.set_week_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
     rd.set_by_category(ModelRc::from(Rc::new(VecModel::from(cats))));
     rd.set_by_project(ModelRc::from(Rc::new(VecModel::from(projects))));
-    rd.set_daily(ModelRc::from(Rc::new(VecModel::from(daily))));
+    rd.set_can_forward(anchor < Local::now().date_naive());
 }
 
 /// Track the host window size and resize the compositor output + active windows

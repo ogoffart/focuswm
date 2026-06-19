@@ -1,13 +1,11 @@
 import { Theme } from "theme.slint";
-import { ReportData, ReportRow } from "globals.slint";
+import { ReportData, ReportRow, DayBar, Logic } from "globals.slint";
 import { Button } from "std-widgets.slint";
 
-// A small table of report rows. With `single`, only one value column is shown
-// (used for the per-day list).
+// A small two-column table of report rows (Day / Week).
 component ReportTable inherits VerticalLayout {
     in property <string> title;
     in property <[ReportRow]> rows;
-    in property <bool> single: false;
     spacing: 3px;
 
     Text { text: root.title; color: Theme.text; font-size: 14px; font-weight: 600; }
@@ -15,48 +13,67 @@ component ReportTable inherits VerticalLayout {
     HorizontalLayout {
         spacing: 8px;
         Text { text: ""; horizontal-stretch: 1; }
-        if !root.single: Text {
-            text: "Today"; color: Theme.text-dim; font-size: 11px;
-            width: 72px; horizontal-alignment: right;
-        }
-        Text {
-            text: root.single ? "Time" : "Week"; color: Theme.text-dim; font-size: 11px;
-            width: 72px; horizontal-alignment: right;
-        }
+        Text { text: "Day"; color: Theme.text-dim; font-size: 11px; width: 72px; horizontal-alignment: right; }
+        Text { text: "Week"; color: Theme.text-dim; font-size: 11px; width: 72px; horizontal-alignment: right; }
     }
-
     for r in root.rows: HorizontalLayout {
         spacing: 8px;
-        Text {
-            text: r.label; color: Theme.text; font-size: 13px;
-            horizontal-stretch: 1; overflow: elide;
-        }
-        if !root.single: Text {
-            text: r.today; color: Theme.text-dim; font-size: 13px;
-            width: 72px; horizontal-alignment: right;
-        }
-        Text {
-            text: root.single ? r.today : r.week; color: Theme.text; font-size: 13px;
-            width: 72px; horizontal-alignment: right;
-        }
+        Text { text: r.label; color: Theme.text; font-size: 13px; horizontal-stretch: 1; overflow: elide; }
+        Text { text: r.today; color: Theme.text-dim; font-size: 13px; width: 72px; horizontal-alignment: right; }
+        Text { text: r.week; color: Theme.text; font-size: 13px; width: 72px; horizontal-alignment: right; }
     }
+    if root.rows.length == 0: Text { text: "No time logged."; color: Theme.text-dim; font-size: 12px; }
+}
 
-    if root.rows.length == 0: Text {
-        text: "No time logged yet."; color: Theme.text-dim; font-size: 12px;
+// A bar chart of the selected week's daily totals.
+component WeekGraph inherits VerticalLayout {
+    in property <[DayBar]> bars;
+    spacing: 4px;
+    Text { text: "This week"; color: Theme.text; font-size: 14px; font-weight: 600; }
+    HorizontalLayout {
+        height: 120px;
+        spacing: 8px;
+        for b in root.bars: VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 4px;
+            // Bar area (grows from the bottom).
+            bararea := Rectangle {
+                vertical-stretch: 1;
+                Rectangle {
+                    width: 70%;
+                    x: (parent.width - self.width) / 2;
+                    height: max(2px, bararea.height * b.fraction);
+                    y: bararea.height - self.height;
+                    background: b.selected ? Theme.accent : Theme.accent-dim;
+                    border-radius: 3px;
+                }
+            }
+            Text {
+                text: b.value;
+                color: Theme.text-dim;
+                font-size: 10px;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: b.label;
+                color: b.selected ? Theme.accent : Theme.text-dim;
+                font-size: 11px;
+                font-weight: b.selected ? 700 : 400;
+                horizontal-alignment: center;
+            }
+        }
     }
 }
 
-// Time report dialog.
+// Time report dialog with day/week navigation and a weekly graph.
 export component Report inherits Rectangle {
     callback close();
     background: #000000aa;
 
-    TouchArea {
-        clicked => { root.close(); }
-    }
+    TouchArea { clicked => { root.close(); } }
 
     Rectangle {
-        width: 540px;
+        width: 560px;
         height: layout.preferred-height + 2 * 20px;
         background: Theme.bg;
         border-radius: 12px;
@@ -71,21 +88,51 @@ export component Report inherits Rectangle {
 
             Text { text: "Time report"; color: Theme.text; font-size: 20px; font-weight: 700; }
 
+            // Day selector + totals.
             HorizontalLayout {
-                spacing: 40px;
+                spacing: 12px;
                 VerticalLayout {
-                    Text { text: "Today"; color: Theme.text-dim; font-size: 12px; }
-                    Text { text: ReportData.today-total; color: Theme.accent; font-size: 24px; font-weight: 700; }
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button { text: "‹"; width: 32px; clicked => { Logic.report-prev-day(); } }
+                        Text {
+                            text: ReportData.day-label;
+                            color: Theme.text-dim;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Button { text: "›"; width: 32px; enabled: ReportData.can-forward; clicked => { Logic.report-next-day(); } }
+                    }
+                    Text { text: ReportData.day-total; color: Theme.accent; font-size: 24px; font-weight: 700; horizontal-alignment: center; }
                 }
                 VerticalLayout {
-                    Text { text: "This week"; color: Theme.text-dim; font-size: 12px; }
-                    Text { text: ReportData.week-total; color: Theme.accent; font-size: 24px; font-weight: 700; }
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button { text: "‹"; width: 32px; clicked => { Logic.report-prev-week(); } }
+                        Text {
+                            text: ReportData.week-label;
+                            color: Theme.text-dim;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Button { text: "›"; width: 32px; enabled: ReportData.can-forward; clicked => { Logic.report-next-week(); } }
+                    }
+                    Text { text: ReportData.week-total; color: Theme.accent; font-size: 24px; font-weight: 700; horizontal-alignment: center; }
                 }
             }
 
+            WeekGraph { bars: ReportData.week-bars; }
+
             ReportTable { title: "By category"; rows: ReportData.by-category; }
             ReportTable { title: "By project"; rows: ReportData.by-project; }
-            ReportTable { title: "Last 7 days"; rows: ReportData.daily; single: true; }
 
             HorizontalLayout {
                 alignment: end;

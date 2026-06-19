@@ -181,6 +181,26 @@ impl TaskList {
         }
     }
 
+    /// Pause time accrual (e.g. when the user goes idle): subsequent flushes add
+    /// nothing until [`resume`](Self::resume) is called. The caller should
+    /// [`flush`](Self::flush) up to the moment activity stopped first.
+    pub fn pause(&mut self) {
+        self.active_since = None;
+    }
+
+    /// Resume time accrual after a pause, counting from `now`.
+    pub fn resume(&mut self, now: u64) {
+        if self.active.is_some() && self.active_since.is_none() {
+            self.active_since = Some(now);
+        }
+    }
+
+    /// Whether time accrual is currently paused (a task is active but not being
+    /// counted).
+    pub fn is_paused(&self) -> bool {
+        self.active.is_some() && self.active_since.is_none()
+    }
+
     /// Flush the running focus interval into the active task without switching,
     /// e.g. on a periodic persist tick. `now` is seconds.
     pub fn flush(&mut self, now: u64) {
@@ -423,6 +443,9 @@ pub struct Settings {
     /// Categories offered in the wizard.
     #[serde(default = "default_categories")]
     pub categories: Vec<String>,
+    /// Minutes of no input after which time tracking pauses (0 = never).
+    #[serde(default = "default_idle_minutes")]
+    pub idle_minutes: u64,
 }
 
 impl Default for Settings {
@@ -431,8 +454,14 @@ impl Default for Settings {
             terminal: String::new(),
             browser: String::new(),
             categories: default_categories(),
+            idle_minutes: default_idle_minutes(),
         }
     }
+}
+
+/// Default idle timeout, in minutes.
+pub fn default_idle_minutes() -> u64 {
+    5
 }
 
 /// The built-in default category list.
@@ -589,6 +618,23 @@ mod tests {
     }
 
     #[test]
+    fn pause_stops_accrual_and_resume_restarts_it() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.set_active(a, 0);
+        list.flush(100); // 100s active
+        // Go idle: flush up to last activity (100), then pause.
+        list.pause();
+        assert!(list.is_paused());
+        list.flush(500); // idle window — counts nothing
+        assert_eq!(list.get(a).unwrap().accumulated_secs, 100);
+        // Resume and accrue again.
+        list.resume(500);
+        list.flush(560);
+        assert_eq!(list.get(a).unwrap().accumulated_secs, 160);
+    }
+
+    #[test]
     fn settings_round_trip_and_defaults() {
         let list = TaskList::new();
         assert!(list.settings().categories.contains(&"work".to_string()));
@@ -597,6 +643,7 @@ mod tests {
             terminal: "foot".into(),
             browser: "firefox".into(),
             categories: vec!["x".into()],
+            idle_minutes: 10,
         });
         assert_eq!(list.settings().terminal, "foot");
         assert_eq!(list.settings().categories, vec!["x".to_string()]);

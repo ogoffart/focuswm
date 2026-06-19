@@ -43,6 +43,11 @@ export component Settings inherits Rectangle {
                 Text { text: "Categories (comma-separated)"; color: Theme.text-dim; font-size: 12px; }
                 cats := LineEdit { text: SettingsData.categories-csv; placeholder-text: "work, personal, learning"; }
             }
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "Idle timeout in minutes (0 = never pause)"; color: Theme.text-dim; font-size: 12px; }
+                idle := LineEdit { text: SettingsData.idle-minutes; placeholder-text: "5"; input-type: number; }
+            }
 
             HorizontalLayout {
                 spacing: 10px;
@@ -52,7 +57,7 @@ export component Settings inherits Rectangle {
                     text: "Save";
                     primary: true;
                     clicked => {
-                        Logic.save-settings(term.text, brow.text, cats.text);
+                        Logic.save-settings(term.text, brow.text, cats.text, idle.text);
                         root.close();
                     }
                 }
