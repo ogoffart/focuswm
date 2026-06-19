@@ -55,6 +55,8 @@ struct Shared {
     popup_rows: HashMap<u64, usize>,
     /// layer-surface id -> its row index in the live `layers` model.
     layer_rows: HashMap<u64, usize>,
+    /// A client is inhibiting idle (e.g. a video player); suppress the idle lock.
+    idle_inhibited: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -632,6 +634,7 @@ fn main() -> anyhow::Result<()> {
         let spawn_env = spawn_env.clone();
         let rebuild_windows = rebuild_windows.clone();
         let popups_model = popups_model.clone();
+        let layers_model = layers_model.clone();
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
         move || {
@@ -729,6 +732,55 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
+                    Event::LayerBuffer {
+                        id,
+                        layer,
+                        x,
+                        y,
+                        width,
+                        height,
+                        pixels,
+                    } => {
+                        let mut s = shared.borrow_mut();
+                        if let Some(&row) = s.layer_rows.get(&id.0) {
+                            if let Some(mut t) = layers_model.row_data(row) {
+                                t.x = x as f32;
+                                t.y = y as f32;
+                                t.width = width as f32;
+                                t.height = height as f32;
+                                layers_model.set_row_data(row, t);
+                            }
+                        } else {
+                            let row = layers_model.row_count();
+                            layers_model.push(LayerTile {
+                                id: id.0 as i32,
+                                texture: slint::Image::default(),
+                                layer: layer as i32,
+                                x: x as f32,
+                                y: y as f32,
+                                width: width as f32,
+                                height: height as f32,
+                            });
+                            s.layer_rows.insert(id.0, row);
+                        }
+                        s.pending.insert(id.0, Frame { width, height, pixels });
+                    }
+                    Event::LayerRemoved(id) => {
+                        let mut s = shared.borrow_mut();
+                        s.pending.remove(&id.0);
+                        if let Some(removed) = s.layer_rows.remove(&id.0) {
+                            layers_model.remove(removed);
+                            for row in s.layer_rows.values_mut() {
+                                if *row > removed {
+                                    *row -= 1;
+                                }
+                            }
+                            s.closed.push(id.0);
+                        }
+                    }
+                    Event::IdleInhibited(on) => {
+                        shared.borrow_mut().idle_inhibited = on;
+                    }
                     Event::XwaylandReady { display } => {
                         spawn_env.borrow_mut().x_display = Some(display);
                         log::info!("xwayland ready: DISPLAY=:{display}");
@@ -817,6 +869,7 @@ fn main() -> anyhow::Result<()> {
     let flush_timer = slint::Timer::default();
     flush_timer.start(slint::TimerMode::Repeated, Duration::from_secs(10), {
         let tasks = tasks.clone();
+        let shared = shared.clone();
         let refresh_tasks = refresh_tasks.clone();
         let now_secs = now_secs.clone();
         let last_activity = last_activity.clone();
@@ -825,10 +878,12 @@ fn main() -> anyhow::Result<()> {
             let now = now_secs();
             let idle_secs = last_activity.borrow().elapsed().as_secs();
             let threshold = tasks.borrow().settings().idle_minutes.saturating_mul(60);
+            // A client (e.g. a video player) may inhibit idle.
+            let inhibited = shared.borrow().idle_inhibited;
             let became_idle = {
                 let mut list = tasks.borrow_mut();
                 list.set_date(&today());
-                if threshold > 0 && idle_secs >= threshold {
+                if threshold > 0 && idle_secs >= threshold && !inhibited {
                     // Count up to the moment activity stopped, then pause.
                     list.flush(now.saturating_sub(idle_secs));
                     let was_running = !list.is_paused();

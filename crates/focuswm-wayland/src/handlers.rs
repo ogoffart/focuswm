@@ -24,6 +24,10 @@ use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use smithay::wayland::shell::wlr_layer::{
+    Anchor, Layer, LayerSurface, LayerSurfaceCachedState, Margins, WlrLayerShellHandler,
+    WlrLayerShellState,
+};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
@@ -38,7 +42,7 @@ use smithay::{
 
 use focuswm_render::{convert_to_rgba, ShmFormat};
 
-use crate::state::{ClientState, FocusState, PopupEntry, WindowEntry};
+use crate::state::{ClientState, FocusState, LayerEntry, PopupEntry, WindowEntry};
 use crate::Event;
 
 impl CompositorHandler for FocusState {
@@ -117,6 +121,39 @@ impl CompositorHandler for FocusState {
                     parent,
                     ox: offset.0,
                     oy: offset.1,
+                    width,
+                    height,
+                    pixels,
+                });
+            }
+            return;
+        }
+
+        // Layer-shell surface (bar, wallpaper, notification)?
+        if let Some(entry) = self.layer_surfaces.get(&root) {
+            let (id, layer) = (entry.id, entry.layer);
+            let mut cache = std::mem::take(&mut self.surface_pixels);
+            let buffer = composite_tree(&root, &mut cache, &mut callbacks);
+            self.surface_pixels = cache;
+            self.pending_callbacks.append(&mut callbacks);
+            if let Some((width, height, pixels)) = buffer {
+                let (anchor, margin) = with_states(&root, |states| {
+                    let mut guard = states.cached_state.get::<LayerSurfaceCachedState>();
+                    let state = guard.current();
+                    (state.anchor, state.margin)
+                });
+                let (x, y) = layer_position(
+                    self.current_output_size,
+                    anchor,
+                    margin,
+                    width as i32,
+                    height as i32,
+                );
+                let _ = self.events.send(Event::LayerBuffer {
+                    id,
+                    layer: layer_to_u8(layer),
+                    x,
+                    y,
                     width,
                     height,
                     pixels,
@@ -558,6 +595,91 @@ impl ShmHandler for FocusState {
 
 impl OutputHandler for FocusState {}
 
+impl WlrLayerShellHandler for FocusState {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: LayerSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        layer: Layer,
+        _namespace: String,
+    ) {
+        // Size the surface from its request, filling 0 dimensions to the output.
+        let desired = with_states(surface.wl_surface(), |states| {
+            states.cached_state.get::<LayerSurfaceCachedState>().current().size
+        });
+        let (out_w, out_h) = self.current_output_size;
+        let w = if desired.w > 0 { desired.w } else { out_w };
+        let h = if desired.h > 0 { desired.h } else { out_h };
+        surface.with_pending_state(|state| {
+            state.size = Some((w, h).into());
+        });
+        surface.send_configure();
+
+        let id = self.allocate_window_id();
+        let wl = surface.wl_surface().clone();
+        self.layer_surfaces
+            .insert(wl, LayerEntry { id, surface, layer });
+        log::info!("new layer surface {id:?} ({layer:?}) {w}x{h}");
+    }
+
+    fn layer_destroyed(&mut self, surface: LayerSurface) {
+        if let Some(entry) = self.layer_surfaces.remove(surface.wl_surface()) {
+            let _ = self.events.send(Event::LayerRemoved(entry.id));
+        }
+    }
+}
+
+impl smithay::wayland::idle_inhibit::IdleInhibitHandler for FocusState {
+    fn inhibit(&mut self, surface: WlSurface) {
+        let was_empty = self.idle_inhibitors.is_empty();
+        self.idle_inhibitors.insert(surface);
+        if was_empty {
+            let _ = self.events.send(Event::IdleInhibited(true));
+        }
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibitors.remove(&surface);
+        if self.idle_inhibitors.is_empty() {
+            let _ = self.events.send(Event::IdleInhibited(false));
+        }
+    }
+}
+
+fn layer_to_u8(layer: Layer) -> u8 {
+    match layer {
+        Layer::Background => 0,
+        Layer::Bottom => 1,
+        Layer::Top => 2,
+        Layer::Overlay => 3,
+    }
+}
+
+/// Position a layer surface against the output edges per its anchors + margins.
+fn layer_position(
+    (out_w, out_h): (i32, i32),
+    anchor: Anchor,
+    margin: Margins,
+    w: i32,
+    h: i32,
+) -> (i32, i32) {
+    let x = if anchor.contains(Anchor::RIGHT) && !anchor.contains(Anchor::LEFT) {
+        out_w - w - margin.right
+    } else {
+        margin.left
+    };
+    let y = if anchor.contains(Anchor::BOTTOM) && !anchor.contains(Anchor::TOP) {
+        out_h - h - margin.bottom
+    } else {
+        margin.top
+    };
+    (x, y)
+}
+
 impl SeatHandler for FocusState {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -655,6 +777,8 @@ delegate_output!(FocusState);
 delegate_data_device!(FocusState);
 smithay::delegate_primary_selection!(FocusState);
 smithay::delegate_dmabuf!(FocusState);
+smithay::delegate_layer_shell!(FocusState);
+smithay::delegate_idle_inhibit!(FocusState);
 
 #[cfg(test)]
 mod tests {

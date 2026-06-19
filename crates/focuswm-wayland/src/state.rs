@@ -15,6 +15,7 @@ use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::wlr_layer::{Layer, LayerSurface, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::{PopupSurface, ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
@@ -33,6 +34,10 @@ pub struct FocusState {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub xdg_decoration_state: XdgDecorationState,
+    pub layer_shell_state: WlrLayerShellState,
+    pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
+    /// Surfaces currently inhibiting idle (video players etc.).
+    pub idle_inhibitors: std::collections::HashSet<WlSurface>,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<FocusState>,
@@ -54,6 +59,8 @@ pub struct FocusState {
     pub windows: HashMap<WlSurface, WindowEntry>,
     /// Mapped popups (menus etc.), keyed by their `wl_surface`.
     pub popups: HashMap<WlSurface, PopupEntry>,
+    /// Mapped layer-shell surfaces (bars, wallpapers), keyed by `wl_surface`.
+    pub layer_surfaces: HashMap<WlSurface, LayerEntry>,
 
     /// XWayland window manager (created once XWayland signals it is ready).
     pub xwm: Option<smithay::xwayland::X11Wm>,
@@ -76,6 +83,13 @@ pub struct FocusState {
 
     /// Outbound channel notifying the UI thread of shell events.
     pub events: std::sync::mpsc::Sender<Event>,
+}
+
+/// A tracked layer-shell surface (panel, bar, wallpaper, notification).
+pub struct LayerEntry {
+    pub id: WindowId,
+    pub surface: LayerSurface,
+    pub layer: Layer,
 }
 
 /// A tracked X11 (XWayland) window.
@@ -131,6 +145,12 @@ impl FocusState {
                     .values()
                     .find(|e| e.id == id)
                     .map(|e| e.popup.wl_surface().clone())
+            })
+            .or_else(|| {
+                self.layer_surfaces
+                    .values()
+                    .find(|e| e.id == id)
+                    .map(|e| e.surface.wl_surface().clone())
             })
             .or_else(|| {
                 self.x11_windows

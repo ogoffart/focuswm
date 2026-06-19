@@ -200,6 +200,31 @@ impl FocusState {
         };
         self.output.change_current_state(Some(mode), None, None, None);
         self.output.set_preferred(mode);
+
+        // Re-configure layer surfaces that span the output (a 0 dimension means
+        // "fill"), so bars/wallpapers track the new size.
+        use smithay::wayland::compositor::with_states;
+        use smithay::wayland::shell::wlr_layer::{LayerSurface, LayerSurfaceCachedState};
+        let surfaces: Vec<LayerSurface> = self
+            .layer_surfaces
+            .values()
+            .map(|e| e.surface.clone())
+            .collect();
+        for surface in surfaces {
+            let desired = with_states(surface.wl_surface(), |states| {
+                states.cached_state.get::<LayerSurfaceCachedState>().current().size
+            });
+            if desired.w > 0 && desired.h > 0 {
+                continue;
+            }
+            let w = if desired.w > 0 { desired.w } else { size.0 };
+            let h = if desired.h > 0 { desired.h } else { size.1 };
+            surface.with_pending_state(|state| {
+                state.size = Some((w, h).into());
+            });
+            surface.send_configure();
+        }
+
         let _ = self.events.send(Event::OutputResized {
             width: size.0,
             height: size.1,

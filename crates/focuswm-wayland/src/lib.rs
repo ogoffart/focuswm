@@ -72,6 +72,21 @@ pub enum Event {
         pixels: Vec<u8>,
     },
     PopupRemoved(WindowId),
+    /// A layer-shell surface committed a frame, drawn at `(x, y)`. `layer` is
+    /// 0=background, 1=bottom, 2=top, 3=overlay.
+    LayerBuffer {
+        id: WindowId,
+        layer: u8,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
+    LayerRemoved(WindowId),
+    /// A client started (true) or stopped (false) inhibiting idle — e.g. a video
+    /// player; the shell should suppress its idle lock while true.
+    IdleInhibited(bool),
     /// XWayland is up; X11 apps should be launched with `DISPLAY=:{display}`.
     XwaylandReady { display: u32 },
     /// A window committed a GPU (dmabuf) buffer. The planes carry owned fds for
@@ -151,6 +166,19 @@ impl std::fmt::Debug for Event {
                 .field("height", height)
                 .finish_non_exhaustive(),
             Event::PopupRemoved(id) => f.debug_tuple("PopupRemoved").field(id).finish(),
+            Event::LayerBuffer {
+                id, layer, x, y, width, height, ..
+            } => f
+                .debug_struct("LayerBuffer")
+                .field("id", id)
+                .field("layer", layer)
+                .field("x", x)
+                .field("y", y)
+                .field("width", width)
+                .field("height", height)
+                .finish_non_exhaustive(),
+            Event::LayerRemoved(id) => f.debug_tuple("LayerRemoved").field(id).finish(),
+            Event::IdleInhibited(on) => f.debug_tuple("IdleInhibited").field(on).finish(),
             Event::XwaylandReady { display } => {
                 f.debug_struct("XwaylandReady").field("display", display).finish()
             }
@@ -231,6 +259,10 @@ pub fn run(
     let xdg_shell_state = XdgShellState::new::<FocusState>(&dh);
     let xdg_decoration_state =
         smithay::wayland::shell::xdg::decoration::XdgDecorationState::new::<FocusState>(&dh);
+    let layer_shell_state =
+        smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<FocusState>(&dh);
+    let idle_inhibit_state =
+        smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<FocusState>(&dh);
     let shm_state = ShmState::new::<FocusState>(&dh, Vec::new());
     let output_manager_state = OutputManagerState::new_with_xdg_output::<FocusState>(&dh);
     let mut seat_state = SeatState::<FocusState>::new();
@@ -274,6 +306,9 @@ pub fn run(
         compositor_state,
         xdg_shell_state,
         xdg_decoration_state,
+        layer_shell_state,
+        idle_inhibit_state,
+        idle_inhibitors: std::collections::HashSet::new(),
         shm_state,
         output_manager_state,
         seat_state,
@@ -288,6 +323,7 @@ pub fn run(
         next_window_id: 0,
         windows: std::collections::HashMap::new(),
         popups: std::collections::HashMap::new(),
+        layer_surfaces: std::collections::HashMap::new(),
         xwm: None,
         xwayland_shell_state,
         x11_windows: std::collections::HashMap::new(),
