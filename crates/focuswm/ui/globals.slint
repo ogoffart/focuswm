@@ -85,6 +85,8 @@ export global Logic {
     callback create-task(string, string, string, string);
     // Sidebar interactions.
     callback switch-task(int /* id */);
+    // Switch to desktop 0 (the scratch desktop not tied to any task).
+    callback switch-to-desktop0();
     callback delete-task(int /* id */);
     // Reorder: move the task with this id by `delta` (-1 up, +1 down).
     callback move-task(int /* id */, int /* delta */);

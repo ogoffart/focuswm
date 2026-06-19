@@ -154,7 +154,6 @@ export component Desktop inherits Window {
     in-out property <bool> task-settings-open: false;
     in-out property <bool> report-open: false;
     in-out property <bool> locked: false;
-    property <bool> has-active: AppData.active-task >= 0;
 
     // Match std-widgets to the dark theme.
     init => { Palette.color-scheme = ColorScheme.dark; }
@@ -173,15 +172,13 @@ export component Desktop inherits Window {
             horizontal-stretch: 1;
             clip: true;
 
-            if AppData.windows.length == 0 && root.has-active: Text {
-                text: "No windows yet — a terminal is opening…";
+            if AppData.windows.length == 0: Text {
+                text: AppData.active-task < 0
+                    ? "Desktop 0 — open a terminal or browser, or pick a task."
+                    : "No windows yet — a terminal is opening…";
                 color: Theme.text-dim;
                 font-size: 14px;
-            }
-            if !root.has-active: Text {
-                text: "Create a task to get started.";
-                color: Theme.text-dim;
-                font-size: 16px;
+                horizontal-alignment: center;
             }
 
             // Client windows of the active task, stacked (last on top).

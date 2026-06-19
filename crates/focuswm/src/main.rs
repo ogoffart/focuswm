@@ -255,7 +255,7 @@ fn main() -> anyhow::Result<()> {
                 .active()
                 .and_then(|id| list.get(id))
                 .map(|t| t.name.clone())
-                .unwrap_or_default();
+                .unwrap_or_else(|| "Desktop 0".to_string());
             ui.global::<AppData>().set_active_name(name.into());
             let history: Vec<SharedString> =
                 list.repo_history().iter().map(|r| r.clone().into()).collect();
@@ -404,6 +404,31 @@ fn main() -> anyhow::Result<()> {
             refresh_tasks();
             rebuild_windows();
             // Focus the active task's first window, if any.
+            let first = tasks.borrow().active_windows().first().copied();
+            if let Some(w) = first {
+                let _ = cmd_tx.send(Command::FocusWindow(w));
+            }
+        }
+    });
+
+    // Switch to desktop 0 (the scratch desktop, not tied to any task).
+    ui.global::<Logic>().on_switch_to_desktop0({
+        let tasks = tasks.clone();
+        let refresh_tasks = refresh_tasks.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let now_secs = now_secs.clone();
+        let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
+        move || {
+            mark_active();
+            {
+                let mut list = tasks.borrow_mut();
+                list.set_date(&today());
+                list.set_scratch_active(now_secs());
+            }
+            refresh_tasks();
+            rebuild_windows();
+            // Focus desktop 0's first window, if any.
             let first = tasks.borrow().active_windows().first().copied();
             if let Some(w) = first {
                 let _ = cmd_tx.send(Command::FocusWindow(w));
@@ -751,16 +776,9 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Seed the UI from any persisted tasks.
-    {
-        let mut list = tasks.borrow_mut();
-        list.set_date(&today());
-        if list.active().is_none() {
-            if let Some(first) = list.tasks().first().map(|t| t.id) {
-                list.set_active(first, now_secs());
-            }
-        }
-    }
+    // Start on desktop 0 (the scratch desktop); the user picks a task to begin
+    // time tracking.
+    tasks.borrow_mut().set_date(&today());
     refresh_tasks();
     rebuild_windows();
 

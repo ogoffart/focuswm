@@ -70,14 +70,17 @@ impl Task {
 pub struct TaskList {
     /// Tasks in sidebar order.
     tasks: Vec<Task>,
-    /// window -> the task it belongs to.
+    /// window -> the desktop it belongs to. `None` means desktop 0, the scratch
+    /// desktop that isn't tied to any task.
     #[serde(default, skip)]
-    window_task: HashMap<WindowId, TaskId>,
-    /// The currently active (focused) task.
+    window_task: HashMap<WindowId, Option<TaskId>>,
+    /// The currently active (focused) desktop: `Some(task)` for a task, or
+    /// `None` for desktop 0 (the scratch desktop). Desktop 0 is the default.
     #[serde(default, skip)]
     active: Option<TaskId>,
     /// Timestamp (seconds) at which the active task became active; `None` when
-    /// no task is active or time tracking hasn't started.
+    /// desktop 0 is active or time tracking hasn't started. No time accrues on
+    /// desktop 0.
     #[serde(default, skip)]
     active_since: Option<u64>,
     /// Next task id to hand out.
@@ -157,8 +160,8 @@ impl TaskList {
     }
 
     /// Remove a task and any windows assigned to it. If it was active, the
-    /// active task becomes the first remaining task (or `None`); the supplied
-    /// `now` flushes the running interval first.
+    /// active desktop falls back to desktop 0; the supplied `now` flushes the
+    /// running interval first.
     pub fn remove_task(&mut self, id: TaskId, now: u64) {
         if self.active == Some(id) {
             self.flush(now);
@@ -166,12 +169,7 @@ impl TaskList {
             self.active_since = None;
         }
         self.tasks.retain(|t| t.id != id);
-        self.window_task.retain(|_, t| *t != id);
-        if self.active.is_none() {
-            if let Some(first) = self.tasks.first().map(|t| t.id) {
-                self.set_active(first, now);
-            }
-        }
+        self.window_task.retain(|_, t| *t != Some(id));
     }
 
     /// Move the task at `from` to position `to` (both clamped). No-op if out of
@@ -204,6 +202,18 @@ impl TaskList {
         if let Some(task) = self.get_mut(id) {
             task.has_notification = false;
         }
+    }
+
+    /// Switch to desktop 0 — the scratch desktop with no associated task.
+    /// Flushes the running interval onto the previously active task first; no
+    /// time accrues while desktop 0 is active.
+    pub fn set_scratch_active(&mut self, now: u64) {
+        if self.active.is_none() {
+            return;
+        }
+        self.flush(now);
+        self.active = None;
+        self.active_since = None;
     }
 
     /// Pause time accrual (e.g. when the user goes idle): subsequent flushes add
@@ -277,12 +287,12 @@ impl TaskList {
         self.settings = settings;
     }
 
-    /// Assign a newly mapped window to the active task. Returns the task it was
-    /// assigned to, if any.
+    /// Assign a newly mapped window to the active desktop (the active task, or
+    /// desktop 0 when none is active). Returns the task it was assigned to, or
+    /// `None` for desktop 0.
     pub fn assign_window(&mut self, window: WindowId) -> Option<TaskId> {
-        let active = self.active?;
-        self.window_task.insert(window, active);
-        Some(active)
+        self.window_task.insert(window, self.active);
+        self.active
     }
 
     /// Forget a window that has been unmapped.
@@ -290,35 +300,42 @@ impl TaskList {
         self.window_task.remove(&window);
     }
 
-    /// The task a window belongs to, if known.
+    /// The task a window belongs to, or `None` if it's on desktop 0 or unknown.
     pub fn task_of_window(&self, window: WindowId) -> Option<TaskId> {
-        self.window_task.get(&window).copied()
+        self.window_task.get(&window).copied().flatten()
     }
 
-    /// Windows belonging to a task, in insertion order is not guaranteed; the
-    /// caller should not rely on ordering.
-    pub fn windows_for(&self, id: TaskId) -> Vec<WindowId> {
+    /// Windows assigned to `desktop` (`None` = desktop 0). Ordering is by window
+    /// id, ascending.
+    fn windows_on(&self, desktop: Option<TaskId>) -> Vec<WindowId> {
         let mut v: Vec<WindowId> = self
             .window_task
             .iter()
-            .filter(|(_, t)| **t == id)
+            .filter(|(_, d)| **d == desktop)
             .map(|(w, _)| *w)
             .collect();
         v.sort();
         v
     }
 
-    /// Windows belonging to the active task (the ones that should be visible).
-    pub fn active_windows(&self) -> Vec<WindowId> {
-        match self.active {
-            Some(id) => self.windows_for(id),
-            None => Vec::new(),
-        }
+    /// Windows belonging to a task. Ordering is by window id, ascending.
+    pub fn windows_for(&self, id: TaskId) -> Vec<WindowId> {
+        self.windows_on(Some(id))
     }
 
-    /// Whether a window is on the active task (i.e. currently visible).
+    /// Windows on desktop 0 (the scratch desktop).
+    pub fn scratch_windows(&self) -> Vec<WindowId> {
+        self.windows_on(None)
+    }
+
+    /// Windows on the active desktop (the ones that should be visible).
+    pub fn active_windows(&self) -> Vec<WindowId> {
+        self.windows_on(self.active)
+    }
+
+    /// Whether a window is on the active desktop (i.e. currently visible).
     pub fn is_visible(&self, window: WindowId) -> bool {
-        self.active.is_some() && self.task_of_window(window) == self.active
+        self.window_task.get(&window).copied() == Some(self.active)
     }
 
     /// Mark a task as having a pending notification (no-op for the active task,
@@ -610,16 +627,56 @@ mod tests {
     }
 
     #[test]
-    fn removing_active_task_picks_a_new_active_and_drops_windows() {
+    fn removing_active_task_falls_back_to_desktop0_and_drops_windows() {
         let mut list = TaskList::new();
         let a = list.add_task("A", "work");
-        let b = list.add_task("B", "work");
+        let _b = list.add_task("B", "work");
         list.set_active(a, 0);
         list.assign_window(WindowId(1));
         list.remove_task(a, 50);
         assert_eq!(list.get(a), None);
         assert_eq!(list.task_of_window(WindowId(1)), None);
-        assert_eq!(list.active(), Some(b));
+        // Falls back to desktop 0 rather than auto-selecting another task.
+        assert_eq!(list.active(), None);
+    }
+
+    #[test]
+    fn desktop0_is_default_and_holds_its_own_windows() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        // A fresh list starts on desktop 0 (no active task).
+        assert_eq!(list.active(), None);
+        // Windows opened on desktop 0 stay there and are visible.
+        list.assign_window(WindowId(1));
+        assert_eq!(list.scratch_windows(), vec![WindowId(1)]);
+        assert_eq!(list.active_windows(), vec![WindowId(1)]);
+        assert!(list.is_visible(WindowId(1)));
+
+        // Switching to a task hides desktop 0's windows; new ones go to the task.
+        list.set_active(a, 10);
+        list.assign_window(WindowId(2));
+        assert!(!list.is_visible(WindowId(1)));
+        assert!(list.is_visible(WindowId(2)));
+        assert_eq!(list.windows_for(a), vec![WindowId(2)]);
+
+        // Back to desktop 0: its window is visible again, the task's is hidden.
+        list.set_scratch_active(20);
+        assert_eq!(list.active(), None);
+        assert_eq!(list.active_windows(), vec![WindowId(1)]);
+        assert!(!list.is_visible(WindowId(2)));
+    }
+
+    #[test]
+    fn desktop0_does_not_accrue_time() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.set_active(a, 0);
+        list.set_scratch_active(100); // 100s counted onto A, then desktop 0
+        assert_eq!(list.get(a).unwrap().accumulated_secs, 100);
+        // Time on desktop 0 is not tracked.
+        list.flush(400);
+        assert_eq!(list.get(a).unwrap().accumulated_secs, 100);
+        assert!(!list.is_paused());
     }
 
     #[test]

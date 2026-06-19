@@ -147,6 +147,28 @@ fn main() {
 
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_desktop.png");
 
+    // Desktop 0 active (no task): its row is highlighted and the content area
+    // shows the scratch-desktop hint instead of windows.
+    ui.global::<AppData>().set_active_task(-1);
+    ui.global::<AppData>().set_active_name("Desktop 0".into());
+    ui.global::<AppData>()
+        .set_windows(ModelRc::from(Rc::new(VecModel::<WindowTile>::default())));
+    save(&ui, &window, PhysicalSize::new(1280, 800), "shot_desktop0.png");
+    // Restore the task scene for the remaining shots.
+    ui.global::<AppData>()
+        .set_windows(ModelRc::from(Rc::new(VecModel::from(vec![
+            WindowTile {
+                id: 10,
+                title: "nvim — auth.rs".into(),
+                texture: solid_image(40, 42, 54),
+                width: 800.0,
+                height: 600.0,
+                decorated: false,
+            },
+        ]))));
+    ui.global::<AppData>().set_active_task(0);
+    ui.global::<AppData>().set_active_name("Fix login bug".into());
+
     // Same scene with the creation wizard open.
     ui.set_wizard_open(true);
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_wizard.png");
