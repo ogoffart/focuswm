@@ -121,4 +121,43 @@ fn main() {
     // Same scene with the creation wizard open.
     ui.set_wizard_open(true);
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_wizard.png");
+    ui.set_wizard_open(false);
+
+    // The time report, with sample figures.
+    let cat_rows = vec![
+        ReportRow { label: "work".into(), today: "1h 12m".into(), week: "6h 40m".into() },
+        ReportRow { label: "learning".into(), today: "30m".into(), week: "3h 05m".into() },
+        ReportRow { label: "personal".into(), today: "0m".into(), week: "45m".into() },
+    ];
+    let proj_rows = vec![
+        ReportRow { label: "Fix login bug".into(), today: "42m".into(), week: "4h 10m".into() },
+        ReportRow { label: "Review PR #128".into(), today: "30m".into(), week: "2h 30m".into() },
+        ReportRow { label: "Read Wayland book".into(), today: "30m".into(), week: "3h 05m".into() },
+    ];
+    let daily_rows = vec![
+        ReportRow { label: "2026-06-15".into(), today: "2h 10m".into(), week: "".into() },
+        ReportRow { label: "2026-06-16".into(), today: "3h 25m".into(), week: "".into() },
+        ReportRow { label: "2026-06-17".into(), today: "1h 50m".into(), week: "".into() },
+        ReportRow { label: "2026-06-18".into(), today: "2h 33m".into(), week: "".into() },
+        ReportRow { label: "2026-06-19".into(), today: "1h 42m".into(), week: "".into() },
+    ];
+    ui.global::<ReportData>().set_today_total("1h 42m".into());
+    ui.global::<ReportData>().set_week_total("10h 30m".into());
+    ui.global::<ReportData>()
+        .set_by_category(ModelRc::from(Rc::new(VecModel::from(cat_rows))));
+    ui.global::<ReportData>()
+        .set_by_project(ModelRc::from(Rc::new(VecModel::from(proj_rows))));
+    ui.global::<ReportData>()
+        .set_daily(ModelRc::from(Rc::new(VecModel::from(daily_rows))));
+    ui.set_report_open(true);
+    save(&ui, &window, PhysicalSize::new(1280, 800), "shot_report.png");
+    ui.set_report_open(false);
+
+    // The settings dialog.
+    ui.global::<SettingsData>().set_terminal("alacritty".into());
+    ui.global::<SettingsData>().set_browser("firefox".into());
+    ui.global::<SettingsData>()
+        .set_categories_csv("work, personal, meeting, learning, other".into());
+    ui.set_settings_open(true);
+    save(&ui, &window, PhysicalSize::new(1280, 800), "shot_settings.png");
 }

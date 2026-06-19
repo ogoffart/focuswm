@@ -237,5 +237,23 @@ export component Sidebar inherits Rectangle {
                 clicked => { Logic.open-browser(); }
             }
         }
+
+        // Always-available app menu: settings + time report.
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 6px;
+            Button {
+                height: 32px;
+                text: "⚙  Settings";
+                horizontal-stretch: 1;
+                clicked => { Logic.open-settings(); }
+            }
+            Button {
+                height: 32px;
+                text: "📊  Report";
+                horizontal-stretch: 1;
+                clicked => { Logic.open-report(); }
+            }
+        }
     }
 }

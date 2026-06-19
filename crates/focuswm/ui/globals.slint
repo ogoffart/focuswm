@@ -1,5 +1,28 @@
 import { TaskItem, WindowTile } from "types.slint";
 
+// One row of the time report (a category, project, or day).
+export struct ReportRow {
+    label: string,
+    today: string,
+    week: string,
+}
+
+// Report figures, computed host-side and pushed in when the report opens.
+export global ReportData {
+    in property <string> today-total: "0m";
+    in property <string> week-total: "0m";
+    in property <[ReportRow]> by-category;
+    in property <[ReportRow]> by-project;
+    in property <[ReportRow]> daily;
+}
+
+// Current settings values, pushed in when the settings dialog opens.
+export global SettingsData {
+    in property <string> terminal;
+    in property <string> browser;
+    in property <string> categories-csv;
+}
+
 // State the host (Rust) pushes into the UI.
 export global AppData {
     in property <[TaskItem]> tasks;
@@ -29,6 +52,10 @@ export global Logic {
     // Task header actions.
     callback open-browser();
     callback open-terminal();
+    // Settings + report (host populates data and toggles the dialog).
+    callback open-settings();
+    callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */);
+    callback open-report();
     // Window management / input forwarding.
     callback close-window(int /* id */);
     callback focus-window(int /* id */);

@@ -15,7 +15,7 @@ pub struct SpawnEnv {
 /// plus any fixed arguments.
 pub fn terminal_command() -> Vec<String> {
     if let Ok(t) = std::env::var("FOCUSWM_TERMINAL") {
-        return shell_split(&t);
+        return split_command(&t);
     }
     for cand in ["alacritty", "foot", "kitty", "wezterm"] {
         if which(cand) {
@@ -28,7 +28,7 @@ pub fn terminal_command() -> Vec<String> {
 /// Find a web browser.
 pub fn browser_command() -> Vec<String> {
     if let Ok(b) = std::env::var("FOCUSWM_BROWSER") {
-        return shell_split(&b);
+        return split_command(&b);
     }
     for cand in ["firefox", "chromium", "google-chrome", "epiphany"] {
         if which(cand) {
@@ -79,6 +79,6 @@ fn which(program: &str) -> bool {
 }
 
 /// Minimal whitespace split for a configured command line (no quoting support).
-fn shell_split(s: &str) -> Vec<String> {
+pub fn split_command(s: &str) -> Vec<String> {
     s.split_whitespace().map(|w| w.to_string()).collect()
 }

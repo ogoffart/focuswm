@@ -1,0 +1,62 @@
+import { Theme } from "theme.slint";
+import { Logic, SettingsData } from "globals.slint";
+import { LineEdit, Button } from "std-widgets.slint";
+
+// Settings dialog: terminal/browser commands and the category list.
+export component Settings inherits Rectangle {
+    callback close();
+    background: #000000aa;
+
+    // Backdrop click cancels.
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    Rectangle {
+        width: 460px;
+        height: layout.preferred-height + 2 * 20px;
+        background: Theme.bg;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.surface;
+
+        TouchArea {} // eat clicks on the card
+
+        layout := VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+
+            Text { text: "Settings"; color: Theme.text; font-size: 20px; font-weight: 700; }
+
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "Terminal command (blank = auto-detect)"; color: Theme.text-dim; font-size: 12px; }
+                term := LineEdit { text: SettingsData.terminal; placeholder-text: "alacritty"; }
+            }
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "Browser command (blank = auto-detect)"; color: Theme.text-dim; font-size: 12px; }
+                brow := LineEdit { text: SettingsData.browser; placeholder-text: "firefox"; }
+            }
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "Categories (comma-separated)"; color: Theme.text-dim; font-size: 12px; }
+                cats := LineEdit { text: SettingsData.categories-csv; placeholder-text: "work, personal, learning"; }
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+                Button { text: "Cancel"; clicked => { root.close(); } }
+                Button {
+                    text: "Save";
+                    primary: true;
+                    clicked => {
+                        Logic.save-settings(term.text, brow.text, cats.text);
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+}

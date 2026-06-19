@@ -1,10 +1,12 @@
 import { Theme } from "theme.slint";
-import { AppData, Logic } from "globals.slint";
+import { AppData, Logic, ReportData, SettingsData, ReportRow } from "globals.slint";
 import { TaskItem, WindowTile } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { Wizard } from "wizard.slint";
+import { Settings } from "settings.slint";
+import { Report } from "report.slint";
 
-export { AppData, Logic, TaskItem, WindowTile, Theme }
+export { AppData, Logic, ReportData, SettingsData, ReportRow, TaskItem, WindowTile, Theme }
 
 // Renders one client window as a GL texture, forwarding pointer + keyboard to
 // the Wayland client.
@@ -62,6 +64,8 @@ export component Desktop inherits Window {
     background: Theme.bg;
 
     in-out property <bool> wizard-open: false;
+    in-out property <bool> settings-open: false;
+    in-out property <bool> report-open: false;
     property <bool> has-active: AppData.active-task >= 0;
 
     HorizontalLayout {
@@ -105,5 +109,23 @@ export component Desktop inherits Window {
         width: 100%;
         height: 100%;
         close => { root.wizard-open = false; }
+    }
+
+    // Settings overlay.
+    Settings {
+        visible: root.settings-open;
+        x: 0; y: 0;
+        width: 100%;
+        height: 100%;
+        close => { root.settings-open = false; }
+    }
+
+    // Report overlay.
+    Report {
+        visible: root.report-open;
+        x: 0; y: 0;
+        width: 100%;
+        height: 100%;
+        close => { root.report-open = false; }
     }
 }

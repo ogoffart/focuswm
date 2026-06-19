@@ -10,9 +10,10 @@ use std::rc::Rc;
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
+use chrono::{Datelike, Duration as ChronoDuration, Local};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use focuswm_shell::{TaskId, TaskList, WindowId};
+use focuswm_shell::{Settings, TaskId, TaskList, WindowId};
 use focuswm_wayland::{Command, Event};
 
 mod config;
@@ -23,9 +24,6 @@ use config::SpawnEnv;
 use gl_bridge::{Frame, GlBridge};
 
 slint::include_modules!();
-
-/// Default categories offered in the creation wizard.
-const DEFAULT_CATEGORIES: &[&str] = &["work", "personal", "meeting", "learning", "other"];
 
 /// Last-known metadata for a client window.
 #[derive(Default, Clone)]
@@ -93,16 +91,51 @@ fn main() -> anyhow::Result<()> {
         .set_tasks(ModelRc::from(tasks_model.clone()));
     ui.global::<AppData>()
         .set_windows(ModelRc::from(windows_model.clone()));
-    ui.global::<AppData>().set_categories(ModelRc::from(Rc::new(
-        VecModel::from(
-            DEFAULT_CATEGORIES
-                .iter()
-                .map(|c| SharedString::from(*c))
-                .collect::<Vec<_>>(),
-        ),
-    )));
     ui.global::<AppData>()
         .set_browser_name(config::browser_name().into());
+
+    // Publish the configured category list to the wizard.
+    let apply_categories: Rc<dyn Fn()> = {
+        let weak = weak.clone();
+        let tasks = tasks.clone();
+        Rc::new(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let cats: Vec<SharedString> = tasks
+                .borrow()
+                .settings()
+                .categories
+                .iter()
+                .map(|c| c.clone().into())
+                .collect();
+            ui.global::<AppData>()
+                .set_categories(ModelRc::from(Rc::new(VecModel::from(cats))));
+        })
+    };
+    apply_categories();
+
+    // Effective terminal/browser commands: the configured one, or auto-detect.
+    let terminal_cmd: Rc<dyn Fn() -> Vec<String>> = {
+        let tasks = tasks.clone();
+        Rc::new(move || {
+            let t = tasks.borrow().settings().terminal.trim().to_string();
+            if t.is_empty() {
+                config::terminal_command()
+            } else {
+                config::split_command(&t)
+            }
+        })
+    };
+    let browser_cmd: Rc<dyn Fn() -> Vec<String>> = {
+        let tasks = tasks.clone();
+        Rc::new(move || {
+            let b = tasks.borrow().settings().browser.trim().to_string();
+            if b.is_empty() {
+                config::browser_command()
+            } else {
+                config::split_command(&b)
+            }
+        })
+    };
 
     // --- Model refresh helpers -------------------------------------------------
 
@@ -230,10 +263,12 @@ fn main() -> anyhow::Result<()> {
         let rebuild_windows = rebuild_windows.clone();
         let spawn_env = spawn_env.clone();
         let now_secs = now_secs.clone();
+        let terminal_cmd = terminal_cmd.clone();
         let weak = weak.clone();
         move |name, category, branch, repo| {
             {
                 let mut list = tasks.borrow_mut();
+                list.set_date(&today());
                 let id = list.add_task(name.to_string(), category.to_string());
                 if let Some(task) = list.get_mut(id) {
                     if !branch.is_empty() {
@@ -250,7 +285,7 @@ fn main() -> anyhow::Result<()> {
             rebuild_windows();
             persist::save(&tasks.borrow());
             // Auto-open a terminal in the new task.
-            spawn_terminal(&spawn_env.borrow(), None, &weak);
+            spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &weak);
         }
     });
 
@@ -263,6 +298,7 @@ fn main() -> anyhow::Result<()> {
         move |id| {
             {
                 let mut list = tasks.borrow_mut();
+                list.set_date(&today());
                 list.set_active(TaskId(id as u64), now_secs());
             }
             refresh_tasks();
@@ -287,7 +323,11 @@ fn main() -> anyhow::Result<()> {
             for w in windows {
                 let _ = cmd_tx.send(Command::CloseWindow(w));
             }
-            tasks.borrow_mut().remove_task(TaskId(id as u64), now_secs());
+            {
+                let mut list = tasks.borrow_mut();
+                list.set_date(&today());
+                list.remove_task(TaskId(id as u64), now_secs());
+            }
             refresh_tasks();
             rebuild_windows();
             persist::save(&tasks.borrow());
@@ -314,18 +354,76 @@ fn main() -> anyhow::Result<()> {
 
     ui.global::<Logic>().on_open_terminal({
         let spawn_env = spawn_env.clone();
+        let terminal_cmd = terminal_cmd.clone();
         let weak = weak.clone();
-        move || spawn_terminal(&spawn_env.borrow(), None, &weak)
+        move || spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &weak)
     });
 
     ui.global::<Logic>().on_open_browser({
         let spawn_env = spawn_env.clone();
+        let browser_cmd = browser_cmd.clone();
+        let weak = weak.clone();
+        move || spawn_client(&browser_cmd(), &spawn_env.borrow(), None, &weak)
+    });
+
+    // Settings dialog: populate fields and open.
+    ui.global::<Logic>().on_open_settings({
+        let tasks = tasks.clone();
         let weak = weak.clone();
         move || {
-            let env = spawn_env.borrow();
-            if let Err(err) = config::spawn(&config::browser_command(), &env, None) {
-                log::warn!("{err}");
-                notify(&weak, &err);
+            let Some(ui) = weak.upgrade() else { return };
+            let list = tasks.borrow();
+            let s = list.settings();
+            ui.global::<SettingsData>().set_terminal(s.terminal.clone().into());
+            ui.global::<SettingsData>().set_browser(s.browser.clone().into());
+            ui.global::<SettingsData>()
+                .set_categories_csv(s.categories.join(", ").into());
+            ui.set_settings_open(true);
+        }
+    });
+
+    ui.global::<Logic>().on_save_settings({
+        let tasks = tasks.clone();
+        let apply_categories = apply_categories.clone();
+        let weak = weak.clone();
+        move |terminal, browser, categories_csv| {
+            let mut cats: Vec<String> = categories_csv
+                .split(',')
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty())
+                .collect();
+            if cats.is_empty() {
+                cats = focuswm_shell::default_categories();
+            }
+            tasks.borrow_mut().set_settings(Settings {
+                terminal: terminal.to_string(),
+                browser: browser.to_string(),
+                categories: cats,
+            });
+            persist::save(&tasks.borrow());
+            apply_categories();
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<AppData>()
+                    .set_browser_name(browser_label(&tasks.borrow()).into());
+            }
+        }
+    });
+
+    // Time report: flush the running interval, compute figures, and open.
+    ui.global::<Logic>().on_open_report({
+        let tasks = tasks.clone();
+        let now_secs = now_secs.clone();
+        let weak = weak.clone();
+        move || {
+            {
+                let mut list = tasks.borrow_mut();
+                list.set_date(&today());
+                list.flush(now_secs());
+            }
+            persist::save(&tasks.borrow());
+            if let Some(ui) = weak.upgrade() {
+                build_report(&tasks.borrow(), &ui);
+                ui.set_report_open(true);
             }
         }
     });
@@ -385,6 +483,7 @@ fn main() -> anyhow::Result<()> {
     // Seed the UI from any persisted tasks.
     {
         let mut list = tasks.borrow_mut();
+        list.set_date(&today());
         if list.active().is_none() {
             if let Some(first) = list.tasks().first().map(|t| t.id) {
                 list.set_active(first, now_secs());
@@ -484,7 +583,11 @@ fn main() -> anyhow::Result<()> {
         let refresh_tasks = refresh_tasks.clone();
         let now_secs = now_secs.clone();
         move || {
-            tasks.borrow_mut().flush(now_secs());
+            {
+                let mut list = tasks.borrow_mut();
+                list.set_date(&today());
+                list.flush(now_secs());
+            }
             refresh_tasks();
             persist::save(&tasks.borrow());
         }
@@ -493,9 +596,99 @@ fn main() -> anyhow::Result<()> {
     ui.run()?;
 
     // Persist a final time snapshot on exit.
-    tasks.borrow_mut().flush(now_secs());
+    {
+        let mut list = tasks.borrow_mut();
+        list.set_date(&today());
+        list.flush(now_secs());
+    }
     persist::save(&tasks.borrow());
     Ok(())
+}
+
+/// The current local calendar day, "YYYY-MM-DD".
+fn today() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Monday of the current week, "YYYY-MM-DD".
+fn week_start() -> String {
+    let d = Local::now().date_naive();
+    let monday = d - ChronoDuration::days(d.weekday().num_days_from_monday() as i64);
+    monday.format("%Y-%m-%d").to_string()
+}
+
+/// `n` days ago, "YYYY-MM-DD".
+fn days_ago(n: i64) -> String {
+    (Local::now().date_naive() - ChronoDuration::days(n))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// Format a duration in seconds as "Xh Ym" or "Ym".
+fn fmt_dur(secs: u64) -> String {
+    let m = secs / 60;
+    if m >= 60 {
+        format!("{}h {}m", m / 60, m % 60)
+    } else {
+        format!("{m}m")
+    }
+}
+
+/// The program name of the effective browser command, for the UI label.
+fn browser_label(list: &TaskList) -> String {
+    let b = list.settings().browser.trim().to_string();
+    if b.is_empty() {
+        config::browser_name()
+    } else {
+        config::split_command(&b).first().cloned().unwrap_or_default()
+    }
+}
+
+/// Compute and publish the time-report figures (today, this week, last 7 days).
+fn build_report(list: &TaskList, ui: &Desktop) {
+    let today = today();
+    let week = week_start();
+    let seven = days_ago(6);
+    let log = list.time_log();
+    let today_agg = log.aggregate(&today, &today);
+    let week_agg = log.aggregate(&week, &today);
+
+    // Build rows ordered by the week totals, with the matching today value.
+    let rows_of = |week_rows: &[(String, u64)], today_rows: &[(String, u64)]| -> Vec<ReportRow> {
+        week_rows
+            .iter()
+            .map(|(label, wsecs)| {
+                let tsecs = today_rows
+                    .iter()
+                    .find(|(l, _)| l == label)
+                    .map(|(_, s)| *s)
+                    .unwrap_or(0);
+                ReportRow {
+                    label: label.clone().into(),
+                    today: fmt_dur(tsecs).into(),
+                    week: fmt_dur(*wsecs).into(),
+                }
+            })
+            .collect()
+    };
+    let cats = rows_of(&week_agg.by_category, &today_agg.by_category);
+    let projects = rows_of(&week_agg.by_project, &today_agg.by_project);
+    let daily: Vec<ReportRow> = log
+        .daily_totals(&seven, &today)
+        .into_iter()
+        .map(|(date, secs)| ReportRow {
+            label: date.into(),
+            today: fmt_dur(secs).into(),
+            week: SharedString::new(),
+        })
+        .collect();
+
+    let rd = ui.global::<ReportData>();
+    rd.set_today_total(fmt_dur(today_agg.total).into());
+    rd.set_week_total(fmt_dur(week_agg.total).into());
+    rd.set_by_category(ModelRc::from(Rc::new(VecModel::from(cats))));
+    rd.set_by_project(ModelRc::from(Rc::new(VecModel::from(projects))));
+    rd.set_daily(ModelRc::from(Rc::new(VecModel::from(daily))));
 }
 
 /// Track the host window size and resize the compositor output + active windows
@@ -539,13 +732,14 @@ fn sync_output_size(
     }
 }
 
-/// Spawn the configured terminal, surfacing failures as a UI notification.
-fn spawn_terminal(env: &SpawnEnv, cwd: Option<&str>, weak: &slint::Weak<Desktop>) {
+/// Spawn a client program into the compositor, surfacing failures as a UI
+/// notification.
+fn spawn_client(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>, weak: &slint::Weak<Desktop>) {
     if env.wayland_display.is_empty() {
-        log::warn!("terminal requested before the compositor was ready");
+        log::warn!("client requested before the compositor was ready");
         return;
     }
-    if let Err(err) = config::spawn(&config::terminal_command(), env, cwd) {
+    if let Err(err) = config::spawn(cmd, env, cwd) {
         log::warn!("{err}");
         notify(weak, &err);
     }

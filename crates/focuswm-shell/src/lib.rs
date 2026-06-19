@@ -9,4 +9,6 @@ mod model;
 mod task;
 
 pub use model::{WindowId, WindowInfo};
-pub use task::{Task, TaskId, TaskList};
+pub use task::{
+    default_categories, Aggregate, Settings, Task, TaskId, TaskList, TimeEntry, TimeLog,
+};

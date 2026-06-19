@@ -81,6 +81,16 @@ pub struct TaskList {
     /// first, for the wizard's dropdown. Persisted.
     #[serde(default)]
     repo_history: Vec<String>,
+    /// Per-day, per-task time entries, for reporting. Persisted.
+    #[serde(default)]
+    time_log: TimeLog,
+    /// User settings (terminal/browser commands, categories). Persisted.
+    #[serde(default)]
+    settings: Settings,
+    /// The current local calendar day ("YYYY-MM-DD"), supplied by the host via
+    /// [`set_date`]; used to attribute committed intervals in the time log.
+    #[serde(default, skip)]
+    current_date: String,
 }
 
 impl TaskList {
@@ -177,12 +187,49 @@ impl TaskList {
         if let (Some(active), Some(since)) = (self.active, self.active_since) {
             let delta = now.saturating_sub(since);
             if delta > 0 {
-                if let Some(task) = self.get_mut(active) {
-                    task.accumulated_secs += delta;
-                }
+                self.commit_interval(active, delta);
                 self.active_since = Some(now);
             }
         }
+    }
+
+    /// Add `secs` of focus time to `task_id`: both its lifetime total and the
+    /// per-day time log (under the current date set via [`set_date`]).
+    fn commit_interval(&mut self, task_id: TaskId, secs: u64) {
+        if secs == 0 {
+            return;
+        }
+        let (project, category) = self
+            .get(task_id)
+            .map(|t| (t.name.clone(), t.category.clone()))
+            .unwrap_or_default();
+        if let Some(task) = self.get_mut(task_id) {
+            task.accumulated_secs += secs;
+        }
+        let date = self.current_date.clone();
+        self.time_log
+            .record(&date, task_id, &project, &category, secs);
+    }
+
+    /// Set the current local calendar day used to tag time-log entries
+    /// ("YYYY-MM-DD"). The host updates this from its real clock.
+    pub fn set_date(&mut self, today: &str) {
+        self.current_date = today.to_string();
+    }
+
+    /// The persisted time log, for reporting.
+    pub fn time_log(&self) -> &TimeLog {
+        &self.time_log
+    }
+
+    /// The user settings.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Replace the user settings.
+    pub fn set_settings(&mut self, settings: Settings) {
+        self.settings = settings;
     }
 
     /// Assign a newly mapped window to the active task. Returns the task it was
@@ -261,6 +308,139 @@ impl TaskList {
         self.repo_history.insert(0, repo.to_string());
         self.repo_history.truncate(20);
     }
+}
+
+/// One day's accumulated focus time for one task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeEntry {
+    /// Local calendar day, "YYYY-MM-DD".
+    pub date: String,
+    pub task_id: TaskId,
+    /// Task name at the time, denormalized so reports survive task edits/deletes.
+    pub project: String,
+    pub category: String,
+    pub secs: u64,
+}
+
+/// A log of per-day, per-task focus time, with one row per (date, task).
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct TimeLog {
+    entries: Vec<TimeEntry>,
+}
+
+impl TimeLog {
+    pub fn entries(&self) -> &[TimeEntry] {
+        &self.entries
+    }
+
+    /// Add `secs` under `(date, task_id)`, merging with an existing row.
+    pub fn record(&mut self, date: &str, task_id: TaskId, project: &str, category: &str, secs: u64) {
+        if secs == 0 || date.is_empty() {
+            return;
+        }
+        if let Some(e) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.date == date && e.task_id == task_id)
+        {
+            e.secs += secs;
+            e.project = project.to_string();
+            e.category = category.to_string();
+        } else {
+            self.entries.push(TimeEntry {
+                date: date.to_string(),
+                task_id,
+                project: project.to_string(),
+                category: category.to_string(),
+                secs,
+            });
+        }
+    }
+
+    /// Aggregate seconds within the inclusive date range `[since, until]`
+    /// (lexicographic comparison works for "YYYY-MM-DD"). Returns per-category
+    /// and per-project totals (each sorted by time, descending) and the grand
+    /// total.
+    pub fn aggregate(&self, since: &str, until: &str) -> Aggregate {
+        let mut by_category: HashMap<String, u64> = HashMap::new();
+        let mut by_project: HashMap<String, u64> = HashMap::new();
+        let mut total = 0u64;
+        for e in &self.entries {
+            if e.date.as_str() < since || e.date.as_str() > until {
+                continue;
+            }
+            *by_category.entry(e.category.clone()).or_default() += e.secs;
+            *by_project.entry(e.project.clone()).or_default() += e.secs;
+            total += e.secs;
+        }
+        Aggregate {
+            by_category: sorted_desc(by_category),
+            by_project: sorted_desc(by_project),
+            total,
+        }
+    }
+
+    /// Per-day totals within `[since, until]`, sorted by date ascending.
+    pub fn daily_totals(&self, since: &str, until: &str) -> Vec<(String, u64)> {
+        let mut by_day: HashMap<String, u64> = HashMap::new();
+        for e in &self.entries {
+            if e.date.as_str() < since || e.date.as_str() > until {
+                continue;
+            }
+            *by_day.entry(e.date.clone()).or_default() += e.secs;
+        }
+        let mut v: Vec<(String, u64)> = by_day.into_iter().collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+}
+
+/// Aggregated report figures over a date range.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Aggregate {
+    /// (category, seconds), sorted by seconds descending.
+    pub by_category: Vec<(String, u64)>,
+    /// (project, seconds), sorted by seconds descending.
+    pub by_project: Vec<(String, u64)>,
+    pub total: u64,
+}
+
+fn sorted_desc(map: HashMap<String, u64>) -> Vec<(String, u64)> {
+    let mut v: Vec<(String, u64)> = map.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
+/// User settings, persisted with the task list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    /// Terminal command (empty = auto-detect).
+    #[serde(default)]
+    pub terminal: String,
+    /// Browser command (empty = auto-detect).
+    #[serde(default)]
+    pub browser: String,
+    /// Categories offered in the wizard.
+    #[serde(default = "default_categories")]
+    pub categories: Vec<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            terminal: String::new(),
+            browser: String::new(),
+            categories: default_categories(),
+        }
+    }
+}
+
+/// The built-in default category list.
+pub fn default_categories() -> Vec<String> {
+    ["work", "personal", "meeting", "learning", "other"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -362,6 +542,64 @@ mod tests {
         assert!(list.get(b).unwrap().has_notification);
         list.set_active(b, 10); // looking at B clears it
         assert!(!list.get(b).unwrap().has_notification);
+    }
+
+    #[test]
+    fn time_log_records_per_day_per_task_on_flush() {
+        let mut list = TaskList::new();
+        let a = list.add_task("Fix bug", "work");
+        let b = list.add_task("Docs", "writing");
+        list.set_date("2024-03-01");
+        list.set_active(a, 0);
+        list.set_active(b, 100); // 100s -> A on 2024-03-01
+        list.set_date("2024-03-02");
+        list.flush(160); // 60s -> B on 2024-03-02
+
+        let day1 = list.time_log().aggregate("2024-03-01", "2024-03-01");
+        assert_eq!(day1.total, 100);
+        assert_eq!(day1.by_category, vec![("work".to_string(), 100)]);
+        assert_eq!(day1.by_project, vec![("Fix bug".to_string(), 100)]);
+
+        let week = list.time_log().aggregate("2024-03-01", "2024-03-07");
+        assert_eq!(week.total, 160);
+        // Sorted by time descending: work(100) before writing(60).
+        assert_eq!(
+            week.by_category,
+            vec![("work".to_string(), 100), ("writing".to_string(), 60)]
+        );
+    }
+
+    #[test]
+    fn daily_totals_are_sorted_by_date() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.set_date("2024-03-02");
+        list.set_active(a, 0);
+        list.flush(50);
+        list.set_date("2024-03-01");
+        list.flush(80); // 30s on the earlier date
+        let daily = list.time_log().daily_totals("2024-03-01", "2024-03-31");
+        assert_eq!(
+            daily,
+            vec![
+                ("2024-03-01".to_string(), 30),
+                ("2024-03-02".to_string(), 50)
+            ]
+        );
+    }
+
+    #[test]
+    fn settings_round_trip_and_defaults() {
+        let list = TaskList::new();
+        assert!(list.settings().categories.contains(&"work".to_string()));
+        let mut list = list;
+        list.set_settings(Settings {
+            terminal: "foot".into(),
+            browser: "firefox".into(),
+            categories: vec!["x".into()],
+        });
+        assert_eq!(list.settings().terminal, "foot");
+        assert_eq!(list.settings().categories, vec!["x".to_string()]);
     }
 
     #[test]
