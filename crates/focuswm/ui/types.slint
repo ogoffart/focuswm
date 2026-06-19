@@ -20,3 +20,25 @@ export struct WindowTile {
     // Whether the compositor should draw a server-side title bar.
     decorated: bool,
 }
+
+// A client popup (menu, dropdown, tooltip), positioned in the content area.
+export struct PopupTile {
+    id: int,
+    texture: image,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+// A wlr-layer-shell surface (panel, wallpaper, overlay), positioned in the
+// whole window. `layer` is 0=background, 1=bottom, 2=top, 3=overlay.
+export struct LayerTile {
+    id: int,
+    texture: image,
+    layer: int,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}

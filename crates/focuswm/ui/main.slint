@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { AppData, Logic, ReportData, SettingsData, ReportRow } from "globals.slint";
-import { TaskItem, WindowTile } from "types.slint";
+import { TaskItem, WindowTile, PopupTile, LayerTile } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { Wizard } from "wizard.slint";
 import { Settings } from "settings.slint";
@@ -8,7 +8,53 @@ import { Report } from "report.slint";
 import { LockScreen } from "lock.slint";
 import { Palette } from "std-widgets.slint";
 
-export { AppData, Logic, ReportData, SettingsData, ReportRow, TaskItem, WindowTile, Theme }
+export { AppData, Logic, ReportData, SettingsData, ReportRow, TaskItem, WindowTile, PopupTile, LayerTile, Theme }
+
+// A positioned client surface (popup or layer-shell) rendered as a GL texture,
+// forwarding pointer + keyboard to its Wayland surface.
+component ClientSurface inherits Rectangle {
+    in property <int> id;
+    in property <image> texture;
+
+    forward-focus: fs;
+
+    Image {
+        source: texture;
+        image-fit: fill;
+        width: 100%;
+        height: 100%;
+    }
+
+    fs := FocusScope {
+        key-pressed(e) => {
+            Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, true);
+            accept
+        }
+        key-released(e) => {
+            Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, false);
+            accept
+        }
+        ta := TouchArea {
+            pointer-event(e) => {
+                fs.focus();
+                if e.kind == PointerEventKind.down {
+                    Logic.pointer-button(root.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), true);
+                } else if e.kind == PointerEventKind.up {
+                    Logic.pointer-button(root.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
+                } else if e.kind == PointerEventKind.move {
+                    Logic.pointer-moved(root.id, ta.mouse-x, ta.mouse-y);
+                }
+            }
+        }
+    }
+
+    pure function btn-code(b: PointerEventButton) -> int {
+        b == PointerEventButton.left ? 1
+            : b == PointerEventButton.right ? 2
+            : b == PointerEventButton.middle ? 3
+            : 0
+    }
+}
 
 // Renders one client window as a GL texture, forwarding pointer + keyboard to
 // the Wayland client. Draws a server-side title bar when the window negotiated
@@ -123,6 +169,7 @@ export component Desktop inherits Window {
         Rectangle {
             background: Theme.bg;
             horizontal-stretch: 1;
+            clip: true;
 
             if AppData.windows.length == 0 && root.has-active: Text {
                 text: "No windows yet — a terminal is opening…";
@@ -141,6 +188,19 @@ export component Desktop inherits Window {
                 x: 0; y: 0;
                 width: 100%;
                 height: 100%;
+            }
+
+            // wlr-layer-shell surfaces (panels, notifications, launchers) above
+            // the windows, ordered by their layer.
+            for l[i] in AppData.layers: ClientSurface {
+                id: l.id; texture: l.texture;
+                x: l.x; y: l.y; width: l.width; height: l.height;
+            }
+
+            // Client popups (menus, dropdowns) on top.
+            for p[i] in AppData.popups: ClientSurface {
+                id: p.id; texture: p.texture;
+                x: p.x; y: p.y; width: p.width; height: p.height;
             }
         }
     }

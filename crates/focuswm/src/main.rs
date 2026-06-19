@@ -51,6 +51,10 @@ struct Shared {
     tiles: HashMap<u64, (f32, f32, slint::Image)>,
     /// window id -> its row index in the live `windows` model.
     rows: HashMap<u64, usize>,
+    /// popup id -> its row index in the live `popups` model.
+    popup_rows: HashMap<u64, usize>,
+    /// layer-surface id -> its row index in the live `layers` model.
+    layer_rows: HashMap<u64, usize>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -102,10 +106,16 @@ fn main() -> anyhow::Result<()> {
 
     let tasks_model = Rc::new(VecModel::<TaskItem>::default());
     let windows_model = Rc::new(VecModel::<WindowTile>::default());
+    let popups_model = Rc::new(VecModel::<PopupTile>::default());
+    let layers_model = Rc::new(VecModel::<LayerTile>::default());
     ui.global::<AppData>()
         .set_tasks(ModelRc::from(tasks_model.clone()));
     ui.global::<AppData>()
         .set_windows(ModelRc::from(windows_model.clone()));
+    ui.global::<AppData>()
+        .set_popups(ModelRc::from(popups_model.clone()));
+    ui.global::<AppData>()
+        .set_layers(ModelRc::from(layers_model.clone()));
     ui.global::<AppData>()
         .set_browser_name(config::browser_name().into());
 
@@ -233,6 +243,8 @@ fn main() -> anyhow::Result<()> {
             let bridge = bridge.clone();
             let shared = shared.clone();
             let windows_model = windows_model.clone();
+            let popups_model = popups_model.clone();
+            let layers_model = layers_model.clone();
             move |state, graphics_api| match state {
                 slint::RenderingState::RenderingSetup => {
                     if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api {
@@ -256,8 +268,7 @@ fn main() -> anyhow::Result<()> {
                             continue;
                         };
                         let (w, h) = (frame.width as f32, frame.height as f32);
-                        shared.tiles.insert(id, (w, h, image.clone()));
-                        apply_texture(&windows_model, &shared.rows, id, image, w, h);
+                        place_texture(&mut shared, &windows_model, &popups_model, &layers_model, id, image, w, h);
                     }
                     // shm frames.
                     let frames: Vec<(u64, Frame)> = shared.pending.drain().collect();
@@ -266,8 +277,7 @@ fn main() -> anyhow::Result<()> {
                             continue;
                         };
                         let (w, h) = (frame.width as f32, frame.height as f32);
-                        shared.tiles.insert(id, (w, h, image.clone()));
-                        apply_texture(&windows_model, &shared.rows, id, image, w, h);
+                        place_texture(&mut shared, &windows_model, &popups_model, &layers_model, id, image, w, h);
                     }
                 }
                 _ => {}
@@ -621,6 +631,7 @@ fn main() -> anyhow::Result<()> {
         let shared = shared.clone();
         let spawn_env = spawn_env.clone();
         let rebuild_windows = rebuild_windows.clone();
+        let popups_model = popups_model.clone();
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
         move || {
@@ -722,8 +733,52 @@ fn main() -> anyhow::Result<()> {
                         spawn_env.borrow_mut().x_display = Some(display);
                         log::info!("xwayland ready: DISPLAY=:{display}");
                     }
-                    Event::PopupBuffer { .. } | Event::PopupRemoved(_) => {
-                        // Popups are a later milestone; ignore for now.
+                    Event::PopupBuffer {
+                        id,
+                        parent,
+                        ox,
+                        oy,
+                        width,
+                        height,
+                        pixels,
+                    } => {
+                        let mut s = shared.borrow_mut();
+                        let (px, py) = popup_origin(&s, &popups_model, parent);
+                        let (x, y) = (px + ox as f32, py + oy as f32);
+                        if let Some(&row) = s.popup_rows.get(&id.0) {
+                            if let Some(mut t) = popups_model.row_data(row) {
+                                t.x = x;
+                                t.y = y;
+                                t.width = width as f32;
+                                t.height = height as f32;
+                                popups_model.set_row_data(row, t);
+                            }
+                        } else {
+                            let row = popups_model.row_count();
+                            popups_model.push(PopupTile {
+                                id: id.0 as i32,
+                                texture: slint::Image::default(),
+                                x,
+                                y,
+                                width: width as f32,
+                                height: height as f32,
+                            });
+                            s.popup_rows.insert(id.0, row);
+                        }
+                        s.pending.insert(id.0, Frame { width, height, pixels });
+                    }
+                    Event::PopupRemoved(id) => {
+                        let mut s = shared.borrow_mut();
+                        s.pending.remove(&id.0);
+                        if let Some(removed) = s.popup_rows.remove(&id.0) {
+                            popups_model.remove(removed);
+                            for row in s.popup_rows.values_mut() {
+                                if *row > removed {
+                                    *row -= 1;
+                                }
+                            }
+                            s.closed.push(id.0);
+                        }
                     }
                     Event::OutputResized { .. } => {}
                 }
@@ -808,21 +863,62 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Update the live `windows` model row for `id` with a freshly imported texture.
-fn apply_texture(
+/// Where a popup's top-left sits in the content area: its parent's origin plus
+/// the popup's own offset. A window parent sits at the content origin (offset by
+/// its title bar when decorated); a popup parent uses its own position.
+fn popup_origin(
+    shared: &Shared,
+    popups_model: &VecModel<PopupTile>,
+    parent: Option<WindowId>,
+) -> (f32, f32) {
+    let Some(parent) = parent else {
+        return (0.0, 0.0);
+    };
+    if shared.rows.contains_key(&parent.0) {
+        let decorated = shared.meta.get(&parent.0).map(|m| m.decorated).unwrap_or(false);
+        return (0.0, if decorated { 30.0 } else { 0.0 });
+    }
+    if let Some(&row) = shared.popup_rows.get(&parent.0) {
+        if let Some(t) = popups_model.row_data(row) {
+            return (t.x, t.y);
+        }
+    }
+    (0.0, 0.0)
+}
+
+/// Cache the imported texture and update whichever live model row (window,
+/// popup or layer) the surface `id` belongs to.
+fn place_texture(
+    shared: &mut Shared,
     windows_model: &VecModel<WindowTile>,
-    rows: &HashMap<u64, usize>,
+    popups_model: &VecModel<PopupTile>,
+    layers_model: &VecModel<LayerTile>,
     id: u64,
     image: slint::Image,
     w: f32,
     h: f32,
 ) {
-    if let Some(&row) = rows.get(&id) {
-        if let Some(mut tile) = windows_model.row_data(row) {
-            tile.texture = image;
-            tile.width = w;
-            tile.height = h;
-            windows_model.set_row_data(row, tile);
+    shared.tiles.insert(id, (w, h, image.clone()));
+    if let Some(row) = shared.rows.get(&id).copied() {
+        if let Some(mut t) = windows_model.row_data(row) {
+            t.texture = image;
+            t.width = w;
+            t.height = h;
+            windows_model.set_row_data(row, t);
+        }
+    } else if let Some(row) = shared.popup_rows.get(&id).copied() {
+        if let Some(mut t) = popups_model.row_data(row) {
+            t.texture = image;
+            t.width = w;
+            t.height = h;
+            popups_model.set_row_data(row, t);
+        }
+    } else if let Some(row) = shared.layer_rows.get(&id).copied() {
+        if let Some(mut t) = layers_model.row_data(row) {
+            t.texture = image;
+            t.width = w;
+            t.height = h;
+            layers_model.set_row_data(row, t);
         }
     }
 }

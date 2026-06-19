@@ -1,4 +1,4 @@
-import { TaskItem, WindowTile } from "types.slint";
+import { TaskItem, WindowTile, PopupTile, LayerTile } from "types.slint";
 
 // One row of the time report (a category or project).
 export struct ReportRow {
@@ -46,6 +46,10 @@ export global AppData {
     in property <string> active-name;
     // Windows belonging to the active task (already filtered host-side).
     in property <[WindowTile]> windows;
+    // Client popups (menus, dropdowns) for the active task's windows.
+    in property <[PopupTile]> popups;
+    // wlr-layer-shell surfaces (panels, wallpaper, overlays).
+    in property <[LayerTile]> layers;
     // Available categories for the wizard's dropdown.
     in property <[string]> categories;
     // Previously entered origin-repo paths, for the wizard's dropdown.
