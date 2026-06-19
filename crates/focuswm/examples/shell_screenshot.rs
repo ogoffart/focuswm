@@ -135,6 +135,13 @@ fn main() {
             .collect::<Vec<_>>(),
     ))));
 
+    ui.global::<AppData>()
+        .set_tray(ModelRc::from(Rc::new(VecModel::from(vec![
+            TrayIcon { id: "1".into(), title: "Element".into(), icon: solid_image(137, 180, 250) },
+            TrayIcon { id: "2".into(), title: "Network".into(), icon: solid_image(166, 227, 161) },
+            TrayIcon { id: "3".into(), title: "Volume".into(), icon: solid_image(250, 179, 135) },
+        ]))));
+
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_desktop.png");
 
     // Same scene with the creation wizard open.

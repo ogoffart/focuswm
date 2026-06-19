@@ -283,6 +283,28 @@ export component Sidebar inherits Rectangle {
             }
         }
 
+        // System-tray icons.
+        if AppData.tray.length > 0: HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 8px;
+            alignment: start;
+            for t[i] in AppData.tray: ta := TouchArea {
+                width: 26px;
+                height: 26px;
+                mouse-cursor: pointer;
+                clicked => { Logic.tray-activate(t.id); }
+                Rectangle {
+                    border-radius: Theme.radius-sm;
+                    background: ta.has-hover ? Theme.surface-hover : transparent;
+                    Image {
+                        source: t.icon;
+                        width: 18px;
+                        height: 18px;
+                    }
+                }
+            }
+        }
+
         // Always-available app menu: lock, settings, time report.
         HorizontalLayout {
             vertical-stretch: 0;

@@ -20,8 +20,10 @@ mod config;
 mod gl_bridge;
 mod notify;
 mod persist;
+mod tray;
 
 use notify::NotifyEvent;
+use tray::{TrayCommand, TrayUpdate};
 
 use config::SpawnEnv;
 use gl_bridge::{DmabufFrame, Frame, GlBridge};
@@ -139,6 +141,16 @@ fn main() -> anyhow::Result<()> {
     // channel; toasts auto-expire. `toasts` is the source of truth.
     let (toast_tx, toast_rx) = async_channel::unbounded::<NotifyEvent>();
     notify::spawn(toast_tx.clone());
+    // System tray: host SNI on its own thread; icons feed a model.
+    let tray_model = Rc::new(VecModel::<TrayIcon>::default());
+    ui.global::<AppData>()
+        .set_tray(ModelRc::from(tray_model.clone()));
+    let (tray_rx, tray_cmd_tx) = match tray::run() {
+        Some((rx, tx)) => (Some(rx), Some(tx)),
+        None => (None, None),
+    };
+    let tray_items: Rc<RefCell<Vec<TrayIcon>>> = Rc::new(RefCell::new(Vec::new()));
+
     let toasts: Rc<RefCell<Vec<ToastState>>> = Rc::new(RefCell::new(Vec::new()));
     let refresh_toasts: Rc<dyn Fn()> = {
         let toasts = toasts.clone();
@@ -575,6 +587,16 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Activate a system-tray item.
+    ui.global::<Logic>().on_tray_activate({
+        let tray_cmd_tx = tray_cmd_tx.clone();
+        move |id| {
+            if let Some(tx) = &tray_cmd_tx {
+                let _ = tx.send(TrayCommand::Activate(id.to_string()));
+            }
+        }
+    });
+
     // Dismiss a notification toast.
     ui.global::<Logic>().on_dismiss_notification({
         let toasts = toasts.clone();
@@ -688,6 +710,8 @@ fn main() -> anyhow::Result<()> {
         let toasts = toasts.clone();
         let toast_rx = toast_rx.clone();
         let refresh_toasts = refresh_toasts.clone();
+        let tray_model = tray_model.clone();
+        let tray_items = tray_items.clone();
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
         move || {
@@ -940,6 +964,39 @@ fn main() -> anyhow::Result<()> {
             }
             if toasts_dirty {
                 refresh_toasts();
+            }
+
+            // System-tray updates: upsert/remove icons by id.
+            if let Some(rx) = &tray_rx {
+                let mut tray_dirty = false;
+                while let Ok(update) = rx.try_recv() {
+                    tray_dirty = true;
+                    let mut items = tray_items.borrow_mut();
+                    match update {
+                        TrayUpdate::Add { id, title, pixmap } => {
+                            let icon = pixmap
+                                .map(|(w, h, rgba)| rgba_to_image(w, h, &rgba))
+                                .unwrap_or_default();
+                            let entry = TrayIcon {
+                                id: id.clone().into(),
+                                title: title.into(),
+                                icon,
+                            };
+                            if let Some(e) = items.iter_mut().find(|e| e.id.as_str() == id.as_str())
+                            {
+                                *e = entry;
+                            } else {
+                                items.push(entry);
+                            }
+                        }
+                        TrayUpdate::Remove { id } => {
+                            items.retain(|e| e.id.as_str() != id.as_str())
+                        }
+                    }
+                }
+                if tray_dirty {
+                    tray_model.set_vec(tray_items.borrow().clone());
+                }
             }
 
             // Keep the compositor output sized to the host window's content area.
@@ -1248,6 +1305,15 @@ fn spawn_client(
         log::warn!("{err}");
         internal_toast(toast_tx, "focuswm", "Couldn't open application", &err);
     }
+}
+
+/// Build a Slint CPU image from tightly-packed RGBA8 pixels.
+fn rgba_to_image(w: u32, h: u32, rgba: &[u8]) -> slint::Image {
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+    let bytes = buf.make_mut_bytes();
+    let n = bytes.len().min(rgba.len());
+    bytes[..n].copy_from_slice(&rgba[..n]);
+    slint::Image::from_rgba8(buf)
 }
 
 /// Show an internally generated toast (id space well above the daemon's).

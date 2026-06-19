@@ -1,4 +1,4 @@
-import { TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast } from "types.slint";
+import { TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon } from "types.slint";
 
 // One row of the time report (a category or project).
 export struct ReportRow {
@@ -52,6 +52,8 @@ export global AppData {
     in property <[LayerTile]> layers;
     // On-screen notification toasts.
     in property <[NotificationToast]> notifications;
+    // System-tray (StatusNotifierItem) icons.
+    in property <[TrayIcon]> tray;
     // Available categories for the wizard's dropdown.
     in property <[string]> categories;
     // Previously entered origin-repo paths, for the wizard's dropdown.
@@ -84,6 +86,8 @@ export global Logic {
     callback unlock();
     // Dismiss a notification toast.
     callback dismiss-notification(int /* id */);
+    // Activate a system-tray item (left click).
+    callback tray-activate(string /* id */);
     // Report navigation (changes the selected day; the week follows).
     callback report-prev-day();
     callback report-next-day();
