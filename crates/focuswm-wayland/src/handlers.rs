@@ -777,8 +777,44 @@ delegate_output!(FocusState);
 delegate_data_device!(FocusState);
 smithay::delegate_primary_selection!(FocusState);
 smithay::delegate_dmabuf!(FocusState);
+impl smithay::wayland::fractional_scale::FractionalScaleHandler for FocusState {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        // Advertise the output's integer scale as the preferred fractional scale
+        // so HiDPI clients render sharply.
+        use smithay::wayland::compositor::with_states;
+        use smithay::wayland::fractional_scale::with_fractional_scale;
+        with_states(&surface, |states| {
+            with_fractional_scale(states, |fs| {
+                fs.set_preferred_scale(1.0);
+            });
+        });
+    }
+}
+
 smithay::delegate_layer_shell!(FocusState);
 smithay::delegate_idle_inhibit!(FocusState);
+impl smithay::wayland::xdg_activation::XdgActivationHandler for FocusState {
+    fn activation_state(&mut self) -> &mut smithay::wayland::xdg_activation::XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn request_activation(
+        &mut self,
+        _token: smithay::wayland::xdg_activation::XdgActivationToken,
+        _token_data: smithay::wayland::xdg_activation::XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        // A client asked for attention/focus: surface it as a task notification.
+        if let Some(id) = self.windows.get(&surface).map(|e| e.id) {
+            let _ = self.events.send(Event::ActivationRequested(id));
+        }
+    }
+}
+
+smithay::delegate_viewporter!(FocusState);
+smithay::delegate_single_pixel_buffer!(FocusState);
+smithay::delegate_fractional_scale!(FocusState);
+smithay::delegate_xdg_activation!(FocusState);
 
 #[cfg(test)]
 mod tests {

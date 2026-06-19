@@ -84,6 +84,8 @@ pub enum Event {
         pixels: Vec<u8>,
     },
     LayerRemoved(WindowId),
+    /// A client requested activation/attention (xdg-activation) for this window.
+    ActivationRequested(WindowId),
     /// A client started (true) or stopped (false) inhibiting idle — e.g. a video
     /// player; the shell should suppress its idle lock while true.
     IdleInhibited(bool),
@@ -178,6 +180,9 @@ impl std::fmt::Debug for Event {
                 .field("height", height)
                 .finish_non_exhaustive(),
             Event::LayerRemoved(id) => f.debug_tuple("LayerRemoved").field(id).finish(),
+            Event::ActivationRequested(id) => {
+                f.debug_tuple("ActivationRequested").field(id).finish()
+            }
             Event::IdleInhibited(on) => f.debug_tuple("IdleInhibited").field(on).finish(),
             Event::XwaylandReady { display } => {
                 f.debug_struct("XwaylandReady").field("display", display).finish()
@@ -263,6 +268,13 @@ pub fn run(
         smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<FocusState>(&dh);
     let idle_inhibit_state =
         smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<FocusState>(&dh);
+    let viewporter_state = smithay::wayland::viewporter::ViewporterState::new::<FocusState>(&dh);
+    let single_pixel_buffer_state =
+        smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<FocusState>(&dh);
+    let fractional_scale_state =
+        smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<FocusState>(&dh);
+    let xdg_activation_state =
+        smithay::wayland::xdg_activation::XdgActivationState::new::<FocusState>(&dh);
     let shm_state = ShmState::new::<FocusState>(&dh, Vec::new());
     let output_manager_state = OutputManagerState::new_with_xdg_output::<FocusState>(&dh);
     let mut seat_state = SeatState::<FocusState>::new();
@@ -309,6 +321,10 @@ pub fn run(
         layer_shell_state,
         idle_inhibit_state,
         idle_inhibitors: std::collections::HashSet::new(),
+        viewporter_state,
+        single_pixel_buffer_state,
+        fractional_scale_state,
+        xdg_activation_state,
         shm_state,
         output_manager_state,
         seat_state,

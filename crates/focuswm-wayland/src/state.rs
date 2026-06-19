@@ -38,6 +38,12 @@ pub struct FocusState {
     pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     /// Surfaces currently inhibiting idle (video players etc.).
     pub idle_inhibitors: std::collections::HashSet<WlSurface>,
+    /// Extra protocol globals kept alive for their lifetime.
+    pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
+    pub single_pixel_buffer_state:
+        smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
+    pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,
+    pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<FocusState>,

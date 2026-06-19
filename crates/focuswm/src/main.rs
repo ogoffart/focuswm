@@ -633,6 +633,7 @@ fn main() -> anyhow::Result<()> {
         let shared = shared.clone();
         let spawn_env = spawn_env.clone();
         let rebuild_windows = rebuild_windows.clone();
+        let refresh_tasks = refresh_tasks.clone();
         let popups_model = popups_model.clone();
         let layers_model = layers_model.clone();
         let cmd_tx = cmd_tx.clone();
@@ -776,6 +777,14 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
                             s.closed.push(id.0);
+                        }
+                    }
+                    Event::ActivationRequested(id) => {
+                        // An app wants attention: flag its task with a notification.
+                        let task = tasks.borrow().task_of_window(id);
+                        if let Some(task) = task {
+                            tasks.borrow_mut().notify(task);
+                            refresh_tasks();
                         }
                     }
                     Event::IdleInhibited(on) => {
