@@ -113,6 +113,21 @@ fn main() {
     ui.global::<AppData>().set_active_name("Fix login bug".into());
     ui.global::<AppData>().set_clock_time("09:41".into());
     ui.global::<AppData>().set_clock_date("Friday, Jun 19".into());
+    ui.global::<AppData>()
+        .set_notifications(ModelRc::from(Rc::new(VecModel::from(vec![
+            NotificationToast {
+                id: 1,
+                app: "Element".into(),
+                summary: "New message from Alex".into(),
+                body: "Can you review the worktree PR?".into(),
+            },
+            NotificationToast {
+                id: 2,
+                app: "focuswm".into(),
+                summary: "Couldn't open application".into(),
+                body: "failed to launch alacritty: No such file".into(),
+            },
+        ]))));
     ui.global::<AppData>().set_categories(ModelRc::from(Rc::new(VecModel::from(
         ["work", "personal", "learning"]
             .iter()

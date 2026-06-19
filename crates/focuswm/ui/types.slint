@@ -42,3 +42,11 @@ export struct LayerTile {
     width: length,
     height: length,
 }
+
+// An on-screen notification toast (from the freedesktop notification daemon).
+export struct NotificationToast {
+    id: int,
+    app: string,
+    summary: string,
+    body: string,
+}

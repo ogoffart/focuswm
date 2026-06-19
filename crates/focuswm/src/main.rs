@@ -18,12 +18,25 @@ use focuswm_wayland::{Command, Event};
 
 mod config;
 mod gl_bridge;
+mod notify;
 mod persist;
+
+use notify::NotifyEvent;
 
 use config::SpawnEnv;
 use gl_bridge::{DmabufFrame, Frame, GlBridge};
 
 slint::include_modules!();
+
+/// A live on-screen notification toast.
+struct ToastState {
+    id: u32,
+    app: String,
+    summary: String,
+    body: String,
+    /// When to auto-remove it; `None` = sticky.
+    deadline: Option<Instant>,
+}
 
 /// Last-known metadata for a client window.
 #[derive(Default, Clone)]
@@ -118,6 +131,32 @@ fn main() -> anyhow::Result<()> {
         .set_popups(ModelRc::from(popups_model.clone()));
     ui.global::<AppData>()
         .set_layers(ModelRc::from(layers_model.clone()));
+    let notifications_model = Rc::new(VecModel::<NotificationToast>::default());
+    ui.global::<AppData>()
+        .set_notifications(ModelRc::from(notifications_model.clone()));
+
+    // Notification toasts: the freedesktop daemon and internal messages feed one
+    // channel; toasts auto-expire. `toasts` is the source of truth.
+    let (toast_tx, toast_rx) = async_channel::unbounded::<NotifyEvent>();
+    notify::spawn(toast_tx.clone());
+    let toasts: Rc<RefCell<Vec<ToastState>>> = Rc::new(RefCell::new(Vec::new()));
+    let refresh_toasts: Rc<dyn Fn()> = {
+        let toasts = toasts.clone();
+        let notifications_model = notifications_model.clone();
+        Rc::new(move || {
+            let items: Vec<NotificationToast> = toasts
+                .borrow()
+                .iter()
+                .map(|t| NotificationToast {
+                    id: t.id as i32,
+                    app: t.app.clone().into(),
+                    summary: t.summary.clone().into(),
+                    body: t.body.clone().into(),
+                })
+                .collect();
+            notifications_model.set_vec(items);
+        })
+    };
     ui.global::<AppData>()
         .set_browser_name(config::browser_name().into());
 
@@ -298,7 +337,7 @@ fn main() -> anyhow::Result<()> {
         let now_secs = now_secs.clone();
         let terminal_cmd = terminal_cmd.clone();
         let mark_active = mark_active.clone();
-        let weak = weak.clone();
+        let toast_tx = toast_tx.clone();
         move |name, category, branch, repo| {
             mark_active();
             {
@@ -320,7 +359,7 @@ fn main() -> anyhow::Result<()> {
             rebuild_windows();
             persist::save(&tasks.borrow());
             // Auto-open a terminal in the new task.
-            spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &weak);
+            spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &toast_tx);
         }
     });
 
@@ -397,10 +436,10 @@ fn main() -> anyhow::Result<()> {
         let spawn_env = spawn_env.clone();
         let terminal_cmd = terminal_cmd.clone();
         let mark_active = mark_active.clone();
-        let weak = weak.clone();
+        let toast_tx = toast_tx.clone();
         move || {
             mark_active();
-            spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &weak);
+            spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &toast_tx);
         }
     });
 
@@ -408,10 +447,10 @@ fn main() -> anyhow::Result<()> {
         let spawn_env = spawn_env.clone();
         let browser_cmd = browser_cmd.clone();
         let mark_active = mark_active.clone();
-        let weak = weak.clone();
+        let toast_tx = toast_tx.clone();
         move || {
             mark_active();
-            spawn_client(&browser_cmd(), &spawn_env.borrow(), None, &weak);
+            spawn_client(&browser_cmd(), &spawn_env.borrow(), None, &toast_tx);
         }
     });
 
@@ -536,6 +575,16 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Dismiss a notification toast.
+    ui.global::<Logic>().on_dismiss_notification({
+        let toasts = toasts.clone();
+        let refresh_toasts = refresh_toasts.clone();
+        move |id| {
+            toasts.borrow_mut().retain(|t| t.id != id as u32);
+            refresh_toasts();
+        }
+    });
+
     // Unlock: count this as activity, resume tracking, and hide the lock screen.
     ui.global::<Logic>().on_unlock({
         let tasks = tasks.clone();
@@ -636,6 +685,9 @@ fn main() -> anyhow::Result<()> {
         let refresh_tasks = refresh_tasks.clone();
         let popups_model = popups_model.clone();
         let layers_model = layers_model.clone();
+        let toasts = toasts.clone();
+        let toast_rx = toast_rx.clone();
+        let refresh_toasts = refresh_toasts.clone();
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
         move || {
@@ -847,6 +899,49 @@ fn main() -> anyhow::Result<()> {
             if dirty_windows {
                 rebuild_windows();
             }
+
+            // Notification toasts: ingest daemon/internal events, then expire.
+            let mut toasts_dirty = false;
+            while let Ok(ev) = toast_rx.try_recv() {
+                toasts_dirty = true;
+                let mut t = toasts.borrow_mut();
+                match ev {
+                    NotifyEvent::Add {
+                        id,
+                        app_name,
+                        summary,
+                        body,
+                        timeout_ms,
+                    } => {
+                        let deadline = match timeout_ms {
+                            0 => None, // sticky
+                            ms if ms < 0 => Some(Instant::now() + Duration::from_secs(5)),
+                            ms => Some(Instant::now() + Duration::from_millis(ms as u64)),
+                        };
+                        t.retain(|x| x.id != id);
+                        t.push(ToastState { id, app: app_name, summary, body, deadline });
+                        // Keep the on-screen stack bounded.
+                        let overflow = t.len().saturating_sub(5);
+                        if overflow > 0 {
+                            t.drain(0..overflow);
+                        }
+                    }
+                    NotifyEvent::Close { id } => t.retain(|x| x.id != id),
+                }
+            }
+            {
+                let now = Instant::now();
+                let mut t = toasts.borrow_mut();
+                let before = t.len();
+                t.retain(|x| x.deadline.is_none_or(|d| d > now));
+                if t.len() != before {
+                    toasts_dirty = true;
+                }
+            }
+            if toasts_dirty {
+                refresh_toasts();
+            }
+
             // Keep the compositor output sized to the host window's content area.
             if let Some(ui) = weak.upgrade() {
                 sync_output_size(&ui, &cmd_tx, &tasks, &shared);
@@ -1138,22 +1233,34 @@ fn sync_output_size(
     }
 }
 
-/// Spawn a client program into the compositor, surfacing failures as a UI
-/// notification.
-fn spawn_client(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>, weak: &slint::Weak<Desktop>) {
+/// Spawn a client program into the compositor, surfacing failures as a toast.
+fn spawn_client(
+    cmd: &[String],
+    env: &SpawnEnv,
+    cwd: Option<&str>,
+    toast_tx: &async_channel::Sender<NotifyEvent>,
+) {
     if env.wayland_display.is_empty() {
         log::warn!("client requested before the compositor was ready");
         return;
     }
     if let Err(err) = config::spawn(cmd, env, cwd) {
         log::warn!("{err}");
-        notify(weak, &err);
+        internal_toast(toast_tx, "focuswm", "Couldn't open application", &err);
     }
 }
 
-/// Log a user-facing message (a real on-screen toast is a later milestone).
-fn notify(_weak: &slint::Weak<Desktop>, msg: &str) {
-    log::warn!("notify: {msg}");
+/// Show an internally generated toast (id space well above the daemon's).
+fn internal_toast(tx: &async_channel::Sender<NotifyEvent>, app: &str, summary: &str, body: &str) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(1_000_000);
+    let _ = tx.try_send(NotifyEvent::Add {
+        id: NEXT.fetch_add(1, Ordering::Relaxed),
+        app_name: app.to_string(),
+        summary: summary.to_string(),
+        body: body.to_string(),
+        timeout_ms: 5000,
+    });
 }
 
 /// Map a Slint pointer-button index (1=left, 2=right, 3=middle) to an evdev code.

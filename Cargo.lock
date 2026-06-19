@@ -1394,6 +1394,7 @@ name = "focuswm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "chrono",
  "dirs",
  "env_logger",
@@ -1409,6 +1410,7 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "zbus",
 ]
 
 [[package]]

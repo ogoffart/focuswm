@@ -1,4 +1,4 @@
-import { TaskItem, WindowTile, PopupTile, LayerTile } from "types.slint";
+import { TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast } from "types.slint";
 
 // One row of the time report (a category or project).
 export struct ReportRow {
@@ -50,6 +50,8 @@ export global AppData {
     in property <[PopupTile]> popups;
     // wlr-layer-shell surfaces (panels, wallpaper, overlays).
     in property <[LayerTile]> layers;
+    // On-screen notification toasts.
+    in property <[NotificationToast]> notifications;
     // Available categories for the wizard's dropdown.
     in property <[string]> categories;
     // Previously entered origin-repo paths, for the wizard's dropdown.
@@ -80,6 +82,8 @@ export global Logic {
     // Lock screen (also raised automatically on idle).
     callback lock();
     callback unlock();
+    // Dismiss a notification toast.
+    callback dismiss-notification(int /* id */);
     // Report navigation (changes the selected day; the week follows).
     callback report-prev-day();
     callback report-next-day();
