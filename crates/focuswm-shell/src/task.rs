@@ -77,6 +77,10 @@ pub struct TaskList {
     /// Next task id to hand out.
     #[serde(default)]
     next_id: u64,
+    /// Filesystem paths previously entered as a task's origin repo, most-recent
+    /// first, for the wizard's dropdown. Persisted.
+    #[serde(default)]
+    repo_history: Vec<String>,
 }
 
 impl TaskList {
@@ -241,6 +245,22 @@ impl TaskList {
     pub fn reindex_after_load(&mut self) {
         self.next_id = self.tasks.iter().map(|t| t.id.0 + 1).max().unwrap_or(0);
     }
+
+    /// Previously entered origin-repo paths, most-recent first.
+    pub fn repo_history(&self) -> &[String] {
+        &self.repo_history
+    }
+
+    /// Record an entered origin-repo path: de-duplicate and move it to the front,
+    /// keeping the list bounded.
+    pub fn record_repo(&mut self, repo: &str) {
+        if repo.is_empty() {
+            return;
+        }
+        self.repo_history.retain(|r| r != repo);
+        self.repo_history.insert(0, repo.to_string());
+        self.repo_history.truncate(20);
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +362,17 @@ mod tests {
         assert!(list.get(b).unwrap().has_notification);
         list.set_active(b, 10); // looking at B clears it
         assert!(!list.get(b).unwrap().has_notification);
+    }
+
+    #[test]
+    fn repo_history_dedups_and_orders_most_recent_first() {
+        let mut list = TaskList::new();
+        list.record_repo("/home/me/a");
+        list.record_repo("/home/me/b");
+        list.record_repo("/home/me/a"); // re-entered -> moves to front
+        assert_eq!(list.repo_history(), &["/home/me/a", "/home/me/b"]);
+        list.record_repo(""); // ignored
+        assert_eq!(list.repo_history().len(), 2);
     }
 
     #[test]

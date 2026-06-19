@@ -2,6 +2,69 @@ import { Theme } from "theme.slint";
 import { AppData, Logic } from "globals.slint";
 import { LineEdit, Button, ComboBox } from "std-widgets.slint";
 
+// An editable filesystem-path field with a dropdown of previously entered paths.
+component PathCombo inherits Rectangle {
+    in property <[string]> history;
+    in property <string> placeholder;
+    in-out property <string> text <=> edit.text;
+    height: 32px;
+
+    HorizontalLayout {
+        spacing: 4px;
+        edit := LineEdit {
+            horizontal-stretch: 1;
+            placeholder-text: root.placeholder;
+        }
+        Button {
+            width: 36px;
+            text: "▾";
+            clicked => { popup.show(); }
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 2px;
+        width: root.width;
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.surface-hover;
+            VerticalLayout {
+                padding: 4px;
+                if root.history.length == 0: Text {
+                    text: "No previous repos";
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+                for entry in root.history: TouchArea {
+                    height: 28px;
+                    clicked => {
+                        edit.text = entry;
+                        popup.close();
+                    }
+                    Rectangle {
+                        background: parent.has-hover ? Theme.surface-hover : transparent;
+                        border-radius: 4px;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            Text {
+                                text: entry;
+                                color: Theme.text;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Modal wizard for creating a new task. Shown as a full-window overlay; the
 // caller toggles `visible`.
 export component Wizard inherits Rectangle {
@@ -12,7 +75,7 @@ export component Wizard inherits Rectangle {
     public function reset() {
         name-edit.text = "";
         branch-edit.text = "";
-        repo-edit.text = "";
+        repo-combo.text = "";
     }
 
     // Swallow clicks on the dim backdrop so they don't fall through to the
@@ -70,9 +133,10 @@ export component Wizard inherits Rectangle {
 
             VerticalLayout {
                 spacing: 4px;
-                Text { text: "Origin repo (optional)"; color: Theme.text-dim; font-size: 12px; }
-                repo-edit := LineEdit {
-                    placeholder-text: "https://github.com/owner/repo";
+                Text { text: "Origin repo path (optional)"; color: Theme.text-dim; font-size: 12px; }
+                repo-combo := PathCombo {
+                    history: AppData.repo-history;
+                    placeholder: "~/projects/my-repo";
                 }
             }
 
@@ -92,7 +156,7 @@ export component Wizard inherits Rectangle {
                             name-edit.text,
                             category-box.current-value,
                             branch-edit.text,
-                            repo-edit.text,
+                            repo-combo.text,
                         );
                         root.close();
                     }

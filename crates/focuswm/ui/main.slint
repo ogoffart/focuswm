@@ -3,7 +3,6 @@ import { AppData, Logic } from "globals.slint";
 import { TaskItem, WindowTile } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { Wizard } from "wizard.slint";
-import { Button } from "std-widgets.slint";
 
 export { AppData, Logic, TaskItem, WindowTile, Theme }
 
@@ -73,60 +72,28 @@ export component Desktop inherits Window {
             }
         }
 
-        // Content area for the active task.
-        VerticalLayout {
+        // Window region for the active task (fills the area beside the sidebar).
+        Rectangle {
+            background: Theme.bg;
             horizontal-stretch: 1;
 
-            // Task header.
-            Rectangle {
-                height: Theme.header-height;
-                background: Theme.sidebar-bg;
-                HorizontalLayout {
-                    padding-left: Theme.padding;
-                    padding-right: Theme.padding;
-                    spacing: Theme.spacing;
-                    Text {
-                        text: root.has-active ? AppData.active-name : "focuswm";
-                        color: Theme.text;
-                        font-size: 15px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    if root.has-active: Button {
-                        text: "⌨ Terminal";
-                        clicked => { Logic.open-terminal(); }
-                    }
-                    if root.has-active: Button {
-                        text: "🌐 Browser";
-                        clicked => { Logic.open-browser(); }
-                    }
-                }
+            if AppData.windows.length == 0 && root.has-active: Text {
+                text: "No windows yet — a terminal is opening…";
+                color: Theme.text-dim;
+                font-size: 14px;
+            }
+            if !root.has-active: Text {
+                text: "Create a task to get started.";
+                color: Theme.text-dim;
+                font-size: 16px;
             }
 
-            // Window region.
-            Rectangle {
-                background: Theme.bg;
-                vertical-stretch: 1;
-
-                if AppData.windows.length == 0 && root.has-active: Text {
-                    text: "No windows yet — a terminal is opening…";
-                    color: Theme.text-dim;
-                    font-size: 14px;
-                }
-                if !root.has-active: Text {
-                    text: "Create a task to get started.";
-                    color: Theme.text-dim;
-                    font-size: 16px;
-                }
-
-                // Client windows of the active task, stacked (last on top).
-                for tile[i] in AppData.windows: WindowView {
-                    tile: tile;
-                    x: 0; y: 0;
-                    width: 100%;
-                    height: 100%;
-                }
+            // Client windows of the active task, stacked (last on top).
+            for tile[i] in AppData.windows: WindowView {
+                tile: tile;
+                x: 0; y: 0;
+                width: 100%;
+                height: 100%;
             }
         }
     }

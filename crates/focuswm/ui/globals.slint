@@ -11,6 +11,8 @@ export global AppData {
     in property <[WindowTile]> windows;
     // Available categories for the wizard's dropdown.
     in property <[string]> categories;
+    // Previously entered origin-repo paths, for the wizard's dropdown.
+    in property <[string]> repo-history;
     // Command used to label the "Open browser" action, for the tooltip.
     in property <string> browser-name: "browser";
 }

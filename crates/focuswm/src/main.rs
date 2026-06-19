@@ -134,6 +134,10 @@ fn main() -> anyhow::Result<()> {
                 .map(|t| t.name.clone())
                 .unwrap_or_default();
             ui.global::<AppData>().set_active_name(name.into());
+            let history: Vec<SharedString> =
+                list.repo_history().iter().map(|r| r.clone().into()).collect();
+            ui.global::<AppData>()
+                .set_repo_history(ModelRc::from(Rc::new(VecModel::from(history))));
         })
     };
 
@@ -239,6 +243,7 @@ fn main() -> anyhow::Result<()> {
                         task.repo = Some(repo.to_string());
                     }
                 }
+                list.record_repo(repo.as_str());
                 list.set_active(id, now_secs());
             }
             refresh_tasks();
@@ -500,9 +505,9 @@ fn sync_output_size(
     let scale = ui.window().scale_factor().max(1.0);
     let logical_w = (size.width as f32 / scale) as i32;
     let logical_h = (size.height as f32 / scale) as i32;
-    // Content area excludes the sidebar (240px) and header (44px).
+    // Content area excludes only the sidebar (240px); there is no top panel.
     let content_w = (logical_w - 240).max(1);
-    let content_h = (logical_h - 44).max(1);
+    let content_h = logical_h.max(1);
     let changed = LAST.with(|l| {
         let mut l = l.borrow_mut();
         if *l != (content_w, content_h) {
