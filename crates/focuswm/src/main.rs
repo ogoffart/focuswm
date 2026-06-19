@@ -687,6 +687,26 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // --- Live clock ------------------------------------------------------------
+    let update_clock: Rc<dyn Fn()> = {
+        let weak = weak.clone();
+        Rc::new(move || {
+            if let Some(ui) = weak.upgrade() {
+                let now = Local::now();
+                ui.global::<AppData>()
+                    .set_clock_time(now.format("%H:%M").to_string().into());
+                ui.global::<AppData>()
+                    .set_clock_date(now.format("%A, %b %d").to_string().into());
+            }
+        })
+    };
+    update_clock();
+    let clock_timer = slint::Timer::default();
+    clock_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), {
+        let update_clock = update_clock.clone();
+        move || update_clock()
+    });
+
     // --- Periodic time-tracking flush + idle detection -------------------------
     let flush_timer = slint::Timer::default();
     flush_timer.start(slint::TimerMode::Repeated, Duration::from_secs(10), {

@@ -52,6 +52,9 @@ export global AppData {
     in property <[string]> repo-history;
     // Command used to label the "Open browser" action, for the tooltip.
     in property <string> browser-name: "browser";
+    // Live clock, updated by the host.
+    in property <string> clock-time: "--:--";
+    in property <string> clock-date: "";
 }
 
 // Actions the UI invokes; the host handles them.

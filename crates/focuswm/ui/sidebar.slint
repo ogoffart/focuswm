@@ -178,6 +178,24 @@ export component Sidebar inherits Rectangle {
         padding: Theme.padding;
         spacing: Theme.spacing;
 
+        // Clock: time + date.
+        VerticalLayout {
+            spacing: 0px;
+            Text {
+                text: AppData.clock-time;
+                color: Theme.text;
+                font-size: 30px;
+                font-weight: 300;
+                letter-spacing: 1px;
+            }
+            Text {
+                text: AppData.clock-date;
+                color: Theme.text-dim;
+                font-size: Theme.fs-label;
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+
         // Header + add button.
         HorizontalLayout {
             alignment: space-between;

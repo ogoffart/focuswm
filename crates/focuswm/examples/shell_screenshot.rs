@@ -109,6 +109,8 @@ fn main() {
         .set_windows(ModelRc::from(Rc::new(VecModel::from(windows))));
     ui.global::<AppData>().set_active_task(0);
     ui.global::<AppData>().set_active_name("Fix login bug".into());
+    ui.global::<AppData>().set_clock_time("09:41".into());
+    ui.global::<AppData>().set_clock_date("Friday, Jun 19".into());
     ui.global::<AppData>().set_categories(ModelRc::from(Rc::new(VecModel::from(
         ["work", "personal", "learning"]
             .iter()
