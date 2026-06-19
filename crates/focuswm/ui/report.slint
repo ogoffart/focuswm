@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme, Card } from "theme.slint";
 import { ReportData, ReportRow, DayBar, Logic } from "globals.slint";
 import { Button } from "std-widgets.slint";
 
@@ -68,25 +68,21 @@ component WeekGraph inherits VerticalLayout {
 // Time report dialog with day/week navigation and a weekly graph.
 export component Report inherits Rectangle {
     callback close();
-    background: #000000aa;
+    background: Theme.scrim;
 
     TouchArea { clicked => { root.close(); } }
 
-    Rectangle {
+    Card {
         width: 560px;
-        height: layout.preferred-height + 2 * 20px;
-        background: Theme.bg;
-        border-radius: 12px;
-        border-width: 1px;
-        border-color: Theme.surface;
+        height: layout.preferred-height + 2 * Theme.sp-6;
 
         TouchArea {}
 
         layout := VerticalLayout {
-            padding: 20px;
-            spacing: 16px;
+            padding: Theme.sp-6;
+            spacing: Theme.sp-4;
 
-            Text { text: "Time report"; color: Theme.text; font-size: 20px; font-weight: 700; }
+            Text { text: "Time report"; color: Theme.text; font-size: Theme.fs-title; font-weight: 700; }
 
             // Day selector + totals.
             HorizontalLayout {

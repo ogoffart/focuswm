@@ -3,6 +3,20 @@ import { AppData, Logic } from "globals.slint";
 import { TaskItem, WindowTile } from "types.slint";
 import { Button } from "std-widgets.slint";
 
+// A divider plus an uppercase section label.
+component SectionHeader inherits VerticalLayout {
+    in property <string> text;
+    spacing: 8px;
+    Rectangle { height: 1px; background: Theme.border; }
+    Text {
+        text: root.text;
+        color: Theme.text-faint;
+        font-size: Theme.fs-small;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+    }
+}
+
 // A window belonging to the active task.
 component WindowRow inherits Rectangle {
     in property <WindowTile> win;
@@ -10,10 +24,12 @@ component WindowRow inherits Rectangle {
     callback close();
 
     height: 34px;
-    border-radius: 6px;
+    border-radius: Theme.radius-sm;
     background: touch.has-hover ? Theme.surface-hover : Theme.surface;
+    animate background { duration: 120ms; }
 
     touch := TouchArea {
+        mouse-cursor: pointer;
         clicked => { root.activate(); }
     }
 
@@ -24,18 +40,20 @@ component WindowRow inherits Rectangle {
         Text {
             text: "🗔";
             font-size: 12px;
+            color: Theme.text-dim;
             vertical-alignment: center;
         }
         Text {
             text: win.title == "" ? "(untitled)" : win.title;
             color: Theme.text;
-            font-size: 13px;
+            font-size: Theme.fs-body;
             overflow: elide;
             horizontal-stretch: 1;
             vertical-alignment: center;
         }
         close-ta := TouchArea {
             width: 18px;
+            mouse-cursor: pointer;
             clicked => { root.close(); }
             Text {
                 text: "✕";
@@ -57,20 +75,33 @@ component TaskRow inherits Rectangle {
     callback down();
     callback remove();
 
-    height: 60px;
+    height: 58px;
     border-radius: Theme.radius;
-    background: active ? Theme.accent-dim : (touch.has-hover ? Theme.surface-hover : Theme.surface);
-    animate background { duration: 120ms; }
+    background: active ? Theme.accent-soft : (touch.has-hover ? Theme.surface-hover : Theme.surface);
+    animate background { duration: 140ms; }
+
+    // Left accent bar for the active task.
+    Rectangle {
+        x: 0;
+        width: 3px;
+        height: active ? parent.height - 16px : 0px;
+        y: parent.height / 2 - self.height / 2;
+        border-radius: 2px;
+        background: Theme.accent;
+        animate height { duration: 140ms; }
+    }
 
     touch := TouchArea {
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 
     HorizontalLayout {
         padding: 10px;
+        padding-left: 12px;
         spacing: 8px;
 
-        // Notification dot / active marker.
+        // Notification dot.
         Rectangle {
             width: 8px;
             vertical-stretch: 1;
@@ -86,18 +117,18 @@ component TaskRow inherits Rectangle {
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            spacing: 2px;
+            spacing: 3px;
             Text {
                 text: task.name;
-                color: Theme.text;
-                font-size: 14px;
+                color: active ? Theme.accent : Theme.text;
+                font-size: Theme.fs-body;
                 font-weight: 600;
                 overflow: elide;
             }
             Text {
                 text: task.category + " · " + task.minutes + " min";
-                color: Theme.text-dim;
-                font-size: 11px;
+                color: Theme.text-faint;
+                font-size: Theme.fs-small;
                 overflow: elide;
             }
         }
@@ -114,20 +145,23 @@ component TaskRow inherits Rectangle {
                 alignment: center;
                 TouchArea {
                     width: 20px; height: 18px;
+                    mouse-cursor: pointer;
                     clicked => { root.up(); }
-                    Text { text: "▲"; color: Theme.text-dim; font-size: 9px;
+                    Text { text: "▲"; color: parent.has-hover ? Theme.text : Theme.text-faint; font-size: 9px;
                            horizontal-alignment: center; vertical-alignment: center; }
                 }
                 TouchArea {
                     width: 20px; height: 18px;
+                    mouse-cursor: pointer;
                     clicked => { root.remove(); }
-                    Text { text: "✕"; color: Theme.notify; font-size: 11px;
+                    Text { text: "✕"; color: parent.has-hover ? Theme.notify : Theme.text-faint; font-size: 11px;
                            horizontal-alignment: center; vertical-alignment: center; }
                 }
                 TouchArea {
                     width: 20px; height: 18px;
+                    mouse-cursor: pointer;
                     clicked => { root.down(); }
-                    Text { text: "▼"; color: Theme.text-dim; font-size: 9px;
+                    Text { text: "▼"; color: parent.has-hover ? Theme.text : Theme.text-faint; font-size: 9px;
                            horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
@@ -152,11 +186,13 @@ export component Sidebar inherits Rectangle {
                 color: Theme.text;
                 font-size: 18px;
                 font-weight: 700;
+                letter-spacing: 0.3px;
                 vertical-alignment: center;
             }
             add := TouchArea {
                 width: 32px;
                 height: 32px;
+                mouse-cursor: pointer;
                 clicked => { root.add-clicked(); }
                 Rectangle {
                     border-radius: Theme.radius;
@@ -164,7 +200,7 @@ export component Sidebar inherits Rectangle {
                     animate background { duration: 120ms; }
                     Text {
                         text: "+";
-                        color: add.has-hover ? Theme.sidebar-bg : Theme.text;
+                        color: add.has-hover ? Theme.accent-text : Theme.text;
                         font-size: 22px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -201,16 +237,7 @@ export component Sidebar inherits Rectangle {
         if AppData.windows.length > 0: VerticalLayout {
             vertical-stretch: 0;
             spacing: 6px;
-            Rectangle {
-                height: 1px;
-                background: Theme.surface;
-            }
-            Text {
-                text: "Windows";
-                color: Theme.text-dim;
-                font-size: 12px;
-                font-weight: 600;
-            }
+            SectionHeader { text: "WINDOWS"; }
             for win[i] in AppData.windows: WindowRow {
                 win: win;
                 activate => { Logic.focus-window(win.id); }
@@ -224,7 +251,7 @@ export component Sidebar inherits Rectangle {
             spacing: 6px;
             Rectangle {
                 height: 1px;
-                background: Theme.surface;
+                background: Theme.border;
             }
             Button {
                 height: 34px;

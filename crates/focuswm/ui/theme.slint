@@ -1,19 +1,64 @@
-// Centralized colours and metrics.
+// Centralized design tokens: colours, spacing scale, radii, type scale.
 export global Theme {
+    // --- Surfaces ---
     out property <color> bg: #1e1e2e;
     out property <color> sidebar-bg: #181825;
-    out property <color> surface: #313244;
-    out property <color> surface-hover: #45475a;
+    out property <color> surface: #292a3a;
+    out property <color> surface-hover: #383a4f;
+    out property <color> border: #313244;
+    out property <color> scrim: #0b0b12cc;
+
+    // --- Accent ---
     out property <color> accent: #89b4fa;
     out property <color> accent-dim: #5a6aa0;
+    out property <color> accent-soft: #2c3354;
+    out property <color> accent-text: #11111b;
+
+    // --- Text ---
     out property <color> text: #cdd6f4;
     out property <color> text-dim: #9399b2;
+    out property <color> text-faint: #6c7086;
     out property <color> notify: #f38ba8;
+
+    // Kept for older references.
     out property <color> overlay: #000000;
 
-    out property <length> sidebar-width: 240px;
-    out property <length> radius: 8px;
+    // --- Spacing scale (4 / 8 / 12 / 16 / 24) ---
+    out property <length> sp-1: 4px;
+    out property <length> sp-2: 8px;
+    out property <length> sp-3: 12px;
+    out property <length> sp-4: 16px;
+    out property <length> sp-6: 24px;
+    // Aliases used by existing code.
     out property <length> spacing: 8px;
     out property <length> padding: 12px;
+
+    // --- Radii ---
+    out property <length> radius-sm: 6px;
+    out property <length> radius: 10px;
+    out property <length> radius-lg: 16px;
+
+    // --- Type scale ---
+    out property <length> fs-title: 20px;
+    out property <length> fs-heading: 15px;
+    out property <length> fs-label: 12px;
+    out property <length> fs-body: 13px;
+    out property <length> fs-small: 11px;
+
+    // --- Metrics ---
+    out property <length> sidebar-width: 252px;
     out property <length> header-height: 44px;
+    // Card elevation.
+    out property <length> shadow-blur: 28px;
+    out property <color> shadow-color: #000000aa;
+}
+
+// A reusable elevated dialog card with a drop shadow.
+export component Card inherits Rectangle {
+    background: Theme.bg;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.shadow-blur;
+    drop-shadow-color: Theme.shadow-color;
 }

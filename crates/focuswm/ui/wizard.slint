@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme, Card } from "theme.slint";
 import { AppData, Logic } from "globals.slint";
 import { LineEdit, Button, ComboBox } from "std-widgets.slint";
 
@@ -69,7 +69,7 @@ component PathCombo inherits Rectangle {
 // caller toggles `visible`.
 export component Wizard inherits Rectangle {
     callback close();
-    background: #000000aa;
+    background: Theme.scrim;
 
     // Reset the fields each time the wizard appears.
     public function reset() {
@@ -84,25 +84,21 @@ export component Wizard inherits Rectangle {
         clicked => { root.close(); }
     }
 
-    Rectangle {
-        width: 420px;
-        height: card.preferred-height + 2 * Theme.padding;
-        background: Theme.bg;
-        border-radius: 12px;
-        border-width: 1px;
-        border-color: Theme.surface;
+    Card {
+        width: 440px;
+        height: card.preferred-height + 2 * Theme.sp-6;
 
         // Eat clicks on the card itself.
         TouchArea {}
 
         card := VerticalLayout {
-            padding: 20px;
-            spacing: 14px;
+            padding: Theme.sp-6;
+            spacing: Theme.sp-4;
 
             Text {
                 text: "New task";
                 color: Theme.text;
-                font-size: 20px;
+                font-size: Theme.fs-title;
                 font-weight: 700;
             }
 

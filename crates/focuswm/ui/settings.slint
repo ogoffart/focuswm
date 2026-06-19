@@ -1,32 +1,28 @@
-import { Theme } from "theme.slint";
+import { Theme, Card } from "theme.slint";
 import { Logic, SettingsData } from "globals.slint";
 import { LineEdit, Button } from "std-widgets.slint";
 
 // Settings dialog: terminal/browser commands and the category list.
 export component Settings inherits Rectangle {
     callback close();
-    background: #000000aa;
+    background: Theme.scrim;
 
     // Backdrop click cancels.
     TouchArea {
         clicked => { root.close(); }
     }
 
-    Rectangle {
+    Card {
         width: 460px;
-        height: layout.preferred-height + 2 * 20px;
-        background: Theme.bg;
-        border-radius: 12px;
-        border-width: 1px;
-        border-color: Theme.surface;
+        height: layout.preferred-height + 2 * Theme.sp-6;
 
         TouchArea {} // eat clicks on the card
 
         layout := VerticalLayout {
-            padding: 20px;
-            spacing: 14px;
+            padding: Theme.sp-6;
+            spacing: Theme.sp-4;
 
-            Text { text: "Settings"; color: Theme.text; font-size: 20px; font-weight: 700; }
+            Text { text: "Settings"; color: Theme.text; font-size: Theme.fs-title; font-weight: 700; }
 
             VerticalLayout {
                 spacing: 4px;

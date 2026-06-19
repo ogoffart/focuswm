@@ -6,6 +6,7 @@ import { Wizard } from "wizard.slint";
 import { Settings } from "settings.slint";
 import { Report } from "report.slint";
 import { LockScreen } from "lock.slint";
+import { Palette } from "std-widgets.slint";
 
 export { AppData, Logic, ReportData, SettingsData, ReportRow, TaskItem, WindowTile, Theme }
 
@@ -69,6 +70,9 @@ export component Desktop inherits Window {
     in-out property <bool> report-open: false;
     in-out property <bool> locked: false;
     property <bool> has-active: AppData.active-task >= 0;
+
+    // Match std-widgets to the dark theme.
+    init => { Palette.color-scheme = ColorScheme.dark; }
 
     HorizontalLayout {
         Sidebar {
