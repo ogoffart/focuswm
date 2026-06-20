@@ -109,6 +109,15 @@ pub fn spawn(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>) -> Result<(), St
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
+    log::info!(
+        "spawning {program} {args:?} with WAYLAND_DISPLAY={} XDG_RUNTIME_DIR={} DISPLAY={}",
+        env.wayland_display,
+        env.runtime_dir,
+        match env.x_display {
+            Some(n) => format!(":{n}"),
+            None => "<unset: XWayland unavailable>".to_string(),
+        },
+    );
     match command.spawn() {
         Ok(_) => Ok(()),
         Err(err) => Err(format!("failed to launch {program}: {err}")),
