@@ -173,6 +173,10 @@ impl CompositorHandler for FocusState {
             let title = entry.surface.title();
             let app_id = entry.surface.class();
             let decorated = !entry.surface.is_override_redirect();
+            // ICCCM WM_NORMAL_HINTS: 0 on either axis means "unconstrained".
+            let min = entry.surface.min_size().unwrap_or_default();
+            let max = entry.surface.max_size().unwrap_or_default();
+            let (min_w, min_h, max_w, max_h) = (min.w, min.h, max.w, max.h);
             let mut cache = std::mem::take(&mut self.surface_pixels);
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
@@ -186,11 +190,10 @@ impl CompositorHandler for FocusState {
                     title,
                     app_id,
                     decorated,
-                    // X11 size hints aren't plumbed through; leave unconstrained.
-                    min_w: 0,
-                    min_h: 0,
-                    max_w: 0,
-                    max_h: 0,
+                    min_w,
+                    min_h,
+                    max_w,
+                    max_h,
                 });
             }
             return;

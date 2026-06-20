@@ -170,7 +170,16 @@ impl XwmHandler for FocusState {
     ) {
     }
 
-    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+    fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {
+        // Mirror the xdg path: focuswm owns window positions on the UI side, so
+        // hand an X11 interactive-move request to the UI to drive from the
+        // in-flight pointer drag.
+        if let Some(wl) = window.wl_surface() {
+            if let Some(entry) = self.x11_windows.get(&wl) {
+                let _ = self.events.send(Event::MoveRequested(entry.id));
+            }
+        }
+    }
 
     // --- Clipboard / primary-selection bridge (X -> Wayland) ---
 
