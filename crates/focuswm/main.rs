@@ -1587,21 +1587,21 @@ fn main() -> anyhow::Result<()> {
                 }
                 // New client frames are uploaded to GL textures in the rendering
                 // notifier's `BeforeRendering` hook, which only runs when the
-                // window actually repaints. This timer tick doesn't repaint on
-                // its own, so without a nudge here a client that redraws without
-                // any host-side input (e.g. text appearing as you type, a video,
-                // a blinking cursor) would only surface on the next unrelated
-                // redraw — typically a mouse click. Request a repaint whenever
-                // frames are waiting to be uploaded.
-                let frames_pending = {
+                // window actually repaints — and a client redraws (hover
+                // highlights, a blinking cursor, video, text as you type)
+                // without any host-side input. A one-shot `request_redraw` per
+                // arrived frame proved unreliable (coalesced/dropped while idle),
+                // so — like a real compositor — composite every tick while any
+                // client window is on screen, plus while a UI animation plays.
+                let live = {
                     let s = shared.borrow();
-                    !s.pending.is_empty() || !s.pending_dmabuf.is_empty()
+                    !s.rows.is_empty()
+                        || !s.popup_rows.is_empty()
+                        || !s.layer_rows.is_empty()
+                        || !s.pending.is_empty()
+                        || !s.pending_dmabuf.is_empty()
                 };
-                // Also repaint while a UI animation is in flight (maximize /
-                // minimize / snap glide): those change no client frames, so
-                // without this nudge the animation wouldn't advance until some
-                // unrelated input (e.g. a mouse move) forced a redraw.
-                if frames_pending || ui.window().has_active_animations() {
+                if live || ui.window().has_active_animations() {
                     ui.window().request_redraw();
                 }
             }
