@@ -248,20 +248,32 @@ component WindowView inherits Rectangle {
                             AppData.moving-window = -1;
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), true);
                         } else if e.kind == PointerEventKind.up {
-                            AppData.moving-window = -1;
-                            root.interacting = false;
-                            Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
-                            // Raise this window above the others it may overlap.
-                            // (After forwarding the release, so the model reorder
-                            // can't change tile.id mid-handler.)
-                            Logic.focus-window(tile.id);
+                            // If this was a client-side-decoration move drag,
+                            // snap into the zone under the cursor on release.
+                            if (AppData.moving-window == tile.id) {
+                                AppData.moving-window = -1;
+                                root.interacting = false;
+                                Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
+                                root.snap-drop(tile.id, ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y);
+                                Logic.focus-window(tile.id);
+                            } else {
+                                AppData.moving-window = -1;
+                                root.interacting = false;
+                                Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
+                                // Raise this window above the others it may overlap.
+                                // (After forwarding the release, so the model reorder
+                                // can't change tile.id mid-handler.)
+                                Logic.focus-window(tile.id);
+                            }
                         } else if e.kind == PointerEventKind.move {
                             // A client-side-decorated window asked to be moved
                             // (the user is dragging its own title bar): drive the
-                            // floating move instead of forwarding the drag.
+                            // floating move instead of forwarding the drag, and
+                            // show the snap preview like the server-side bar does.
                             if (AppData.moving-window == tile.id && ta.pressed) {
                                 root.interacting = true;
                                 Logic.move-window(tile.id, ta.mouse-x - ta.pressed-x, ta.mouse-y - ta.pressed-y);
+                                root.snap-preview(ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y);
                             } else {
                                 Logic.pointer-moved(tile.id, ta.mouse-x, ta.mouse-y);
                             }
