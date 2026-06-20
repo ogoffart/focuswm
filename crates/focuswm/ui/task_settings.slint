@@ -65,7 +65,7 @@ export component TaskSettings inherits Rectangle {
                 spacing: 10px;
                 alignment: end;
                 Button { text: "Cancel"; clicked => { root.close(); } }
-                Button {
+                save := Button {
                     text: "Save";
                     primary: true;
                     enabled: name.text != "";

@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};
+use slint::platform::{PointerEventButton, WindowEvent};
 use slint::{ComponentHandle, ModelRc, PhysicalSize, SharedString, VecModel};
 
 slint::include_modules!();
@@ -41,6 +42,32 @@ fn save(ui: &Desktop, window: &MinimalSoftwareWindow, size: PhysicalSize, name: 
     image::save_buffer(name, &rgb, buffer.width(), buffer.height(), image::ColorType::Rgb8)
         .expect("write png");
     println!("wrote {name} ({}x{})", buffer.width(), buffer.height());
+}
+
+/// Right-click at `(x, y)` to open a context menu, then snapshot. The
+/// software-rendered window draws embedded popups into the same buffer, so the
+/// open menu is captured.
+fn save_after_right_click(
+    ui: &Desktop,
+    window: &MinimalSoftwareWindow,
+    size: PhysicalSize,
+    x: f32,
+    y: f32,
+    name: &str,
+) {
+    window.set_size(size);
+    let pos = slint::LogicalPosition::new(x, y);
+    let w = ui.window();
+    w.dispatch_event(WindowEvent::PointerMoved { position: pos });
+    w.dispatch_event(WindowEvent::PointerPressed { position: pos, button: PointerEventButton::Right });
+    w.dispatch_event(WindowEvent::PointerReleased { position: pos, button: PointerEventButton::Right });
+    save(ui, window, size, name);
+    // Dismiss the menu (click far away, in the content area) so it doesn't bleed
+    // into later screenshots.
+    let away = slint::LogicalPosition::new(700.0, 400.0);
+    w.dispatch_event(WindowEvent::PointerPressed { position: away, button: PointerEventButton::Left });
+    w.dispatch_event(WindowEvent::PointerReleased { position: away, button: PointerEventButton::Left });
+    w.dispatch_event(WindowEvent::PointerMoved { position: away });
 }
 
 /// A solid-colour image, standing in for a client window's texture.
@@ -255,4 +282,11 @@ fn main() {
     // The lock screen.
     ui.set_locked(true);
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_lock.png");
+    ui.set_locked(false);
+
+    // Context menus (right-click). The window list is the single restored window
+    // from the desktop-0 shot; switch back to the task and right-click a row.
+    ui.global::<AppData>().set_active_task(0);
+    save_after_right_click(&ui, &window, PhysicalSize::new(1280, 800), 110.0, 200.0, "shot_task_menu.png");
+    save_after_right_click(&ui, &window, PhysicalSize::new(1280, 800), 90.0, 607.0, "shot_window_menu.png");
 }

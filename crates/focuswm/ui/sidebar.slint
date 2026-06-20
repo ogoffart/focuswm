@@ -64,6 +64,23 @@ component WindowRow inherits Rectangle {
             }
         }
     }
+
+    // Right-click context menu (top-most, full-area; non-grabbing so left-clicks
+    // fall through to the row / its ✕).
+    ContextMenuArea {
+        width: 100%;
+        height: 100%;
+        Menu {
+            MenuItem {
+                title: "Focus";
+                activated => { root.activate(); }
+            }
+            MenuItem {
+                title: "Close";
+                activated => { root.close(); }
+            }
+        }
+    }
 }
 
 // Desktop 0 — the scratch desktop, always present and not tied to any task.
@@ -120,7 +137,7 @@ component TaskRow inherits Rectangle {
     callback up();
     callback down();
     callback remove();
-    // Right-click: open this task's settings dialog.
+    // Open this task's settings dialog (from the context menu's "Settings…").
     callback edit();
 
     height: 58px;
@@ -142,11 +159,6 @@ component TaskRow inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
-        pointer-event(e) => {
-            if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
-                root.edit();
-            }
-        }
     }
 
     HorizontalLayout {
@@ -154,8 +166,8 @@ component TaskRow inherits Rectangle {
         padding-left: 12px;
         spacing: 8px;
 
-        // Colour dot, doubling as the notification indicator (turns the notify
-        // colour while a notification is pending).
+        // Colour dot, doubling as the notification indicator (turns the
+        // notify colour while a notification is pending).
         Rectangle {
             width: 8px;
             vertical-stretch: 1;
@@ -187,8 +199,8 @@ component TaskRow inherits Rectangle {
             }
         }
 
-        // Per-row controls, revealed on hover (clipped so they don't leak out of
-        // the collapsed 0-width box).
+        // Per-row controls, revealed on hover (clipped so they don't leak
+        // out of the collapsed 0-width box).
         Rectangle {
             clip: true;
             width: touch.has-hover || root.active ? 20px : 0px;
@@ -218,6 +230,33 @@ component TaskRow inherits Rectangle {
                     Text { text: "▼"; color: parent.has-hover ? Theme.text : Theme.text-faint; font-size: 9px;
                            horizontal-alignment: center; vertical-alignment: center; }
                 }
+            }
+        }
+    }
+
+    // Right-click (or the Menu key) opens the per-task context menu. Kept as the
+    // top-most, full-area sibling so it catches right-clicks; it ignores other
+    // buttons, which then fall through to `touch` and the hover controls.
+    ContextMenuArea {
+        width: 100%;
+        height: 100%;
+        Menu {
+            MenuItem {
+                title: "Settings…";
+                activated => { root.edit(); }
+            }
+            MenuItem {
+                title: "Move up";
+                activated => { root.up(); }
+            }
+            MenuItem {
+                title: "Move down";
+                activated => { root.down(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Delete";
+                activated => { root.remove(); }
             }
         }
     }
