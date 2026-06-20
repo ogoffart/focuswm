@@ -139,14 +139,22 @@ component WindowView inherits Rectangle {
             // snap preview, and snap on release. Double-click toggles maximize.
             TouchArea {
                 mouse-cursor: move;
+                // Set once per drag when it began on a maximized window, so the
+                // first move unmaximizes (restores size) before moving.
+                property <bool> unmax-armed: false;
                 moved => {
                     root.interacting = true;
+                    if (tile.maximized && self.unmax-armed) {
+                        self.unmax-armed = false;
+                        Logic.maximize-window(tile.id);
+                    }
                     Logic.move-window(tile.id, self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
                     root.snap-preview(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                 }
                 pointer-event(e) => {
                     if (e.kind == PointerEventKind.down) {
                         root.interacting = true;
+                        self.unmax-armed = true;
                     } else if (e.kind == PointerEventKind.up) {
                         root.interacting = false;
                         root.snap-drop(tile.id, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
@@ -419,6 +427,11 @@ export component Desktop inherits Window {
                 if (e.text == "l") { Logic.lock(); return accept; }
                 if (e.text == "w") { Logic.close-active-window(); return accept; }
                 if (e.text == "n") { wizard.reset(); root.wizard-open = true; return accept; }
+                // Window management on the focused window.
+                if (e.text == Key.LeftArrow) { Logic.snap-focused(1); return accept; }
+                if (e.text == Key.RightArrow) { Logic.snap-focused(2); return accept; }
+                if (e.text == Key.UpArrow) { Logic.maximize-focused(); return accept; }
+                if (e.text == Key.DownArrow) { Logic.minimize-focused(); return accept; }
                 if (root.digit-index(e.text) >= 0) {
                     Logic.switch-task-index(root.digit-index(e.text));
                     return accept;

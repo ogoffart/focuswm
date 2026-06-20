@@ -141,6 +141,10 @@ export global Logic {
     callback maximize-window(int /* id */);
     // Snap a window to a screen region: 1=left half, 2=right half, 3=maximize.
     callback snap-window(int /* id */, int /* zone */);
+    // Keyboard window management, applied to the focused window (Super+arrows).
+    callback snap-focused(int /* zone */);
+    callback maximize-focused();
+    callback minimize-focused();
     callback pointer-moved(int /* id */, length /* x */, length /* y */);
     callback pointer-button(int /* id */, length /* x */, length /* y */, int /* btn */, bool /* pressed */);
     callback key-event(string /* text */, bool /* ctrl */, bool /* alt */, bool /* shift */, bool /* pressed */);

@@ -1172,6 +1172,37 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Keyboard window management (Super+arrows): apply snap/maximize/minimize to
+    // the currently focused window by delegating to the id-based callbacks above,
+    // so the restore-geometry bookkeeping stays in one place.
+    ui.global::<Logic>().on_snap_focused({
+        let weak = weak.clone();
+        let focused = focused.clone();
+        move |zone| {
+            if let (Some(ui), Some(wid)) = (weak.upgrade(), *focused.borrow()) {
+                ui.global::<Logic>().invoke_snap_window(wid.0 as i32, zone);
+            }
+        }
+    });
+    ui.global::<Logic>().on_maximize_focused({
+        let weak = weak.clone();
+        let focused = focused.clone();
+        move || {
+            if let (Some(ui), Some(wid)) = (weak.upgrade(), *focused.borrow()) {
+                ui.global::<Logic>().invoke_maximize_window(wid.0 as i32);
+            }
+        }
+    });
+    ui.global::<Logic>().on_minimize_focused({
+        let weak = weak.clone();
+        let focused = focused.clone();
+        move || {
+            if let (Some(ui), Some(wid)) = (weak.upgrade(), *focused.borrow()) {
+                ui.global::<Logic>().invoke_minimize_window(wid.0 as i32);
+            }
+        }
+    });
+
     ui.global::<Logic>().on_pointer_moved({
         let cmd_tx = cmd_tx.clone();
         let mark_active = mark_active.clone();
@@ -1275,6 +1306,9 @@ fn main() -> anyhow::Result<()> {
         let focused = focused.clone();
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
+        // When client damage (a new buffer) last arrived; we keep compositing for
+        // a short tail afterwards, then let the window idle.
+        let last_damage = std::cell::Cell::new(Instant::now() - Duration::from_secs(1));
         move || {
             let mut dirty_windows = false;
             while let Ok(event) = rx.try_recv() {
@@ -1637,21 +1671,20 @@ fn main() -> anyhow::Result<()> {
                 }
                 // New client frames are uploaded to GL textures in the rendering
                 // notifier's `BeforeRendering` hook, which only runs when the
-                // window actually repaints — and a client redraws (hover
-                // highlights, a blinking cursor, video, text as you type)
-                // without any host-side input. A one-shot `request_redraw` per
-                // arrived frame proved unreliable (coalesced/dropped while idle),
-                // so — like a real compositor — composite every tick while any
-                // client window is on screen, plus while a UI animation plays.
-                let live = {
+                // window repaints. Rather than composite every frame forever
+                // while a window is shown, only repaint when there's *recent*
+                // client damage (a buffer waiting to upload, plus a short tail to
+                // absorb redraw-scheduling lag and brief client follow-ups) or a
+                // UI animation is in flight — so a static desktop truly idles.
+                let damage = {
                     let s = shared.borrow();
-                    !s.rows.is_empty()
-                        || !s.popup_rows.is_empty()
-                        || !s.layer_rows.is_empty()
-                        || !s.pending.is_empty()
-                        || !s.pending_dmabuf.is_empty()
+                    !s.pending.is_empty() || !s.pending_dmabuf.is_empty()
                 };
-                if live || ui.window().has_active_animations() {
+                if damage {
+                    last_damage.set(Instant::now());
+                }
+                let in_tail = last_damage.get().elapsed() < Duration::from_millis(150);
+                if damage || in_tail || ui.window().has_active_animations() {
                     ui.window().request_redraw();
                 }
             }
