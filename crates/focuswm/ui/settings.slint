@@ -1,6 +1,6 @@
 import { Theme, Card } from "theme.slint";
 import { Logic, SettingsData } from "globals.slint";
-import { LineEdit, Button } from "std-widgets.slint";
+import { LineEdit, Button, CheckBox } from "std-widgets.slint";
 
 // Settings dialog: terminal/browser commands and the category list.
 export component Settings inherits Rectangle {
@@ -44,6 +44,10 @@ export component Settings inherits Rectangle {
                 Text { text: "Idle timeout in minutes (0 = never pause)"; color: Theme.text-dim; font-size: 12px; }
                 idle := LineEdit { text: SettingsData.idle-minutes; placeholder-text: "5"; input-type: number; }
             }
+            ffm := CheckBox {
+                text: "Focus follows mouse";
+                checked: SettingsData.focus-follows-mouse;
+            }
 
             HorizontalLayout {
                 spacing: 10px;
@@ -53,7 +57,7 @@ export component Settings inherits Rectangle {
                     text: "Save";
                     primary: true;
                     clicked => {
-                        Logic.save-settings(term.text, brow.text, cats.text, idle.text);
+                        Logic.save-settings(term.text, brow.text, cats.text, idle.text, ffm.checked);
                         root.close();
                     }
                 }

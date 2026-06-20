@@ -583,6 +583,29 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Drag-and-drop reorder: convert the dragged vertical distance into a number
+    // of slots (the row pitch matches `row-pitch` in sidebar.slint) and move the
+    // task by that many positions.
+    ui.global::<Logic>().on_reorder_task({
+        let tasks = tasks.clone();
+        let refresh_tasks = refresh_tasks.clone();
+        let mark_active = mark_active.clone();
+        move |id, dy| {
+            mark_active();
+            const ROW_PITCH: f32 = 64.0;
+            let delta = (dy / ROW_PITCH).round() as i32;
+            if delta != 0 {
+                let mut list = tasks.borrow_mut();
+                if let Some(from) = list.tasks().iter().position(|t| t.id.0 == id as u64) {
+                    let to = (from as i32 + delta).max(0) as usize;
+                    list.reorder(from, to);
+                }
+            }
+            refresh_tasks();
+            persist::save(&tasks.borrow());
+        }
+    });
+
     // Task settings dialog: populate the current task's values and open.
     ui.global::<Logic>().on_open_task_settings({
         let tasks = tasks.clone();
@@ -690,6 +713,8 @@ fn main() -> anyhow::Result<()> {
                 .set_categories_csv(s.categories.join(", ").into());
             ui.global::<SettingsData>()
                 .set_idle_minutes(s.idle_minutes.to_string().into());
+            ui.global::<SettingsData>()
+                .set_focus_follows_mouse(s.focus_follows_mouse);
             ui.set_settings_open(true);
         }
     });
@@ -699,7 +724,7 @@ fn main() -> anyhow::Result<()> {
         let apply_categories = apply_categories.clone();
         let mark_active = mark_active.clone();
         let weak = weak.clone();
-        move |terminal, browser, categories_csv, idle_minutes| {
+        move |terminal, browser, categories_csv, idle_minutes, focus_follows_mouse| {
             mark_active();
             let mut cats: Vec<String> = categories_csv
                 .split(',')
@@ -718,6 +743,7 @@ fn main() -> anyhow::Result<()> {
                 browser: browser.to_string(),
                 categories: cats,
                 idle_minutes: idle,
+                focus_follows_mouse,
             });
             persist::save(&tasks.borrow());
             apply_categories();
@@ -1045,10 +1071,24 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_pointer_moved({
         let cmd_tx = cmd_tx.clone();
         let mark_active = mark_active.clone();
+        let tasks = tasks.clone();
+        let shared = shared.clone();
+        let focused = focused.clone();
         move |id, x, y| {
             mark_active();
+            let wid = WindowId(id as u64);
+            // Focus-follows-mouse: hovering a *window* (not a popup/layer) gives
+            // it keyboard focus. We don't rebuild/raise here, so the stack doesn't
+            // churn as the pointer travels — only the keyboard focus follows.
+            if tasks.borrow().settings().focus_follows_mouse
+                && *focused.borrow() != Some(wid)
+                && shared.borrow().rows.contains_key(&wid.0)
+            {
+                *focused.borrow_mut() = Some(wid);
+                let _ = cmd_tx.send(Command::FocusWindow(wid));
+            }
             let _ = cmd_tx.send(Command::PointerMotion {
-                id: WindowId(id as u64),
+                id: wid,
                 x: x as f64,
                 y: y as f64,
             });

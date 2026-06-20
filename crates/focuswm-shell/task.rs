@@ -525,6 +525,9 @@ pub struct Settings {
     /// Minutes of no input after which time tracking pauses (0 = never).
     #[serde(default = "default_idle_minutes")]
     pub idle_minutes: u64,
+    /// Whether hovering a window gives it keyboard focus (focus-follows-mouse).
+    #[serde(default = "default_focus_follows_mouse")]
+    pub focus_follows_mouse: bool,
 }
 
 impl Default for Settings {
@@ -534,8 +537,14 @@ impl Default for Settings {
             browser: String::new(),
             categories: default_categories(),
             idle_minutes: default_idle_minutes(),
+            focus_follows_mouse: default_focus_follows_mouse(),
         }
     }
+}
+
+/// Default for focus-follows-mouse: on.
+pub fn default_focus_follows_mouse() -> bool {
+    true
 }
 
 /// Default idle timeout, in minutes.
@@ -845,9 +854,11 @@ mod tests {
             browser: "firefox".into(),
             categories: vec!["x".into()],
             idle_minutes: 10,
+            focus_follows_mouse: false,
         });
         assert_eq!(list.settings().terminal, "foot");
         assert_eq!(list.settings().categories, vec!["x".to_string()]);
+        assert!(!list.settings().focus_follows_mouse);
     }
 
     #[test]

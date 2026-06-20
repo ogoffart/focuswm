@@ -35,6 +35,7 @@ export global SettingsData {
     in property <string> browser;
     in property <string> categories-csv;
     in property <string> idle-minutes;
+    in-out property <bool> focus-follows-mouse: true;
 }
 
 // Values for the per-task settings dialog. The host pushes the current task's
@@ -94,6 +95,9 @@ export global Logic {
     callback delete-task(int /* id */);
     // Reorder: move the task with this id by `delta` (-1 up, +1 down).
     callback move-task(int /* id */, int /* delta */);
+    // Drag-and-drop reorder: move the task with this id by the dragged vertical
+    // distance `dy` (the host converts it to a number of slots).
+    callback reorder-task(int /* id */, length /* dy */);
     // Per-task settings dialog (host populates TaskSettingsData and opens it).
     callback open-task-settings(int /* id */);
     // Save edited task properties: id, name, category, colour-palette index.
@@ -105,7 +109,7 @@ export global Logic {
     callback run-command(string /* command */);
     // Settings + report (host populates data and toggles the dialog).
     callback open-settings();
-    callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */, string /* idle-minutes */);
+    callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */, string /* idle-minutes */, bool /* focus-follows-mouse */);
     callback open-report();
     // Lock screen (also raised automatically on idle).
     callback lock();

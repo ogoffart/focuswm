@@ -151,8 +151,13 @@ component TaskRow inherits Rectangle {
     callback remove();
     // Open this task's settings dialog (from the context menu's "Settings…").
     callback edit();
+    // Drag-to-reorder: started on this row, dragged by `dy`, then dropped.
+    callback drag-start();
+    callback drag-move(length /* dy from press */);
+    callback drag-end();
+    // True once a press on this row has turned into a vertical drag.
+    property <bool> dragging-row: false;
 
-    height: 58px;
     border-radius: Theme.radius;
     background: active ? Theme.accent-soft : (touch.has-hover ? Theme.surface-hover : Theme.surface);
     animate background { duration: 140ms; }
@@ -168,9 +173,28 @@ component TaskRow inherits Rectangle {
         animate height { duration: 140ms; }
     }
 
+    // Press-and-tap selects the task; press-and-drag vertically reorders it.
+    // The drag delta is reported relative to the press; the host accumulates it.
     touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        mouse-cursor: root.dragging-row ? MouseCursor.grabbing : MouseCursor.pointer;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.dragging-row = false;
+                root.drag-start();
+            } else if (e.kind == PointerEventKind.up) {
+                if (root.dragging-row) { root.drag-end(); } else { root.clicked(); }
+                root.dragging-row = false;
+            }
+        }
+        moved => {
+            if (!root.dragging-row
+                && (self.mouse-y - self.pressed-y > 4px || self.pressed-y - self.mouse-y > 4px)) {
+                root.dragging-row = true;
+            }
+            if (root.dragging-row) {
+                root.drag-move(self.mouse-y - self.pressed-y);
+            }
+        }
     }
 
     HorizontalLayout {
@@ -280,6 +304,31 @@ export component Sidebar inherits Rectangle {
     width: Theme.sidebar-width;
     background: Theme.sidebar-bg;
 
+    // Task-list geometry + drag-to-reorder state.
+    property <length> row-height: 58px;
+    property <length> row-pitch: 64px; // row height + 6px gap
+    property <int> drag-index: -1;     // which row is being dragged, or -1
+    property <length> drag-dy: 0;      // its accumulated vertical offset
+
+    // The y of task row `i` while a drag is in progress: the dragged row follows
+    // the cursor; rows between its origin and current slot shift by one pitch to
+    // open a gap where it will drop.
+    function slot-y(i: int) -> length {
+        if (root.drag-index < 0) {
+            return i * root.row-pitch;
+        }
+        if (i == root.drag-index) {
+            return i * root.row-pitch + root.drag-dy;
+        }
+        if (i > root.drag-index && root.drag-dy + root.row-pitch / 2 >= (i - root.drag-index) * root.row-pitch) {
+            return (i - 1) * root.row-pitch;
+        }
+        if (i < root.drag-index && -root.drag-dy + root.row-pitch / 2 >= (root.drag-index - i) * root.row-pitch) {
+            return (i + 1) * root.row-pitch;
+        }
+        return i * root.row-pitch;
+    }
+
     VerticalLayout {
         padding: Theme.padding;
         spacing: Theme.spacing;
@@ -339,20 +388,33 @@ export component Sidebar inherits Rectangle {
             clicked => { Logic.switch-to-desktop0(); }
         }
 
-        // The task list.
+        // The task list. Rows are positioned manually (not via a layout) so a
+        // dragged row can float and its neighbours can slide aside. The Flickable
+        // is non-interactive (wheel scrolls; drags are for reordering, not
+        // flicking) so it never steals the reorder gesture.
         Flickable {
             vertical-stretch: 1;
-            VerticalLayout {
-                spacing: 6px;
-                alignment: start;
-                for task[i] in AppData.tasks: TaskRow {
-                    task: task;
-                    active: task.id == AppData.active-task;
-                    clicked => { Logic.switch-task(task.id); }
-                    up => { Logic.move-task(task.id, -1); }
-                    down => { Logic.move-task(task.id, 1); }
-                    remove => { Logic.delete-task(task.id); }
-                    edit => { Logic.open-task-settings(task.id); }
+            interactive: false;
+            viewport-width: self.width;
+            viewport-height: AppData.tasks.length * root.row-pitch;
+            for task[i] in AppData.tasks: TaskRow {
+                x: 0;
+                width: 100%;
+                height: root.row-height;
+                y: root.slot-y(i);
+                task: task;
+                active: task.id == AppData.active-task;
+                clicked => { Logic.switch-task(task.id); }
+                up => { Logic.move-task(task.id, -1); }
+                down => { Logic.move-task(task.id, 1); }
+                remove => { Logic.delete-task(task.id); }
+                edit => { Logic.open-task-settings(task.id); }
+                drag-start => { root.drag-index = i; root.drag-dy = 0; }
+                drag-move(dy) => { root.drag-dy += dy; }
+                drag-end => {
+                    Logic.reorder-task(task.id, root.drag-dy);
+                    root.drag-index = -1;
+                    root.drag-dy = 0;
                 }
             }
         }
