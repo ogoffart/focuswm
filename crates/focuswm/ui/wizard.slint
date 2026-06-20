@@ -1,6 +1,6 @@
 import { Theme, Card } from "theme.slint";
 import { AppData, Logic } from "globals.slint";
-import { LineEdit, Button, ComboBox } from "std-widgets.slint";
+import { LineEdit, Button, ComboBox, ListView } from "std-widgets.slint";
 
 // An editable filesystem-path field with a dropdown of previously entered paths.
 component PathCombo inherits Rectangle {
@@ -76,6 +76,9 @@ export component Wizard inherits Rectangle {
         name-edit.text = "";
         branch-edit.text = "";
         repo-combo.text = "";
+        issue-edit.text = "";
+        // Clear any previously selected/searched issue.
+        Logic.link-issue("", 0, "", "");
     }
 
     // Swallow clicks on the dim backdrop so they don't fall through to the
@@ -133,6 +136,61 @@ export component Wizard inherits Rectangle {
                 repo-combo := PathCombo {
                     history: AppData.repo-history;
                     placeholder: "~/projects/my-repo";
+                }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "Link a GitHub issue / PR (optional)"; color: Theme.text-dim; font-size: 12px; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    issue-edit := LineEdit {
+                        horizontal-stretch: 1;
+                        enabled: AppData.github-enabled;
+                        placeholder-text: AppData.github-enabled
+                            ? "Search issues/PRs…"
+                            : "Set GITHUB_TOKEN to enable";
+                        accepted => { Logic.search-issues(self.text); }
+                    }
+                    Button {
+                        text: AppData.issue-searching ? "…" : "Search";
+                        enabled: AppData.github-enabled && issue-edit.text != "" && !AppData.issue-searching;
+                        clicked => { Logic.search-issues(issue-edit.text); }
+                    }
+                }
+                if AppData.issue-results.length > 0: Rectangle {
+                    height: 132px;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: Theme.surface-hover;
+                    clip: true;
+                    ListView {
+                        for r in AppData.issue-results: ta := TouchArea {
+                            height: 42px;
+                            clicked => { Logic.link-issue(r.slug, r.number, r.title, r.url); }
+                            Rectangle {
+                                background: r.selected ? Theme.accent-soft
+                                    : (ta.has-hover ? Theme.surface-hover : transparent);
+                                VerticalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    Text {
+                                        text: "#\{r.number}  \{r.title}";
+                                        color: Theme.text;
+                                        font-size: 12px;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: r.slug;
+                                        color: Theme.text-dim;
+                                        font-size: 10px;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

@@ -46,6 +46,55 @@ pub struct Task {
     /// Whether this task has a pending notification (shown in the sidebar).
     #[serde(default, skip)]
     pub has_notification: bool,
+    /// A linked GitHub issue or pull request whose activity drives the task's
+    /// notification dot. `None` when the task isn't linked to anything.
+    #[serde(default)]
+    pub github: Option<GithubLink>,
+}
+
+/// A GitHub issue or pull request linked to a task. New activity on it (a newer
+/// `updated_at` than `last_seen`) raises the task's notification dot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubLink {
+    /// `owner/repo`.
+    pub slug: String,
+    /// Issue or PR number.
+    pub number: u64,
+    /// Title, for display.
+    pub title: String,
+    /// Web URL, opened when the user acts on the notification.
+    pub url: String,
+    /// `updated_at` (epoch seconds) last seen by a poll; `None` until first seen.
+    #[serde(default)]
+    pub last_seen: Option<i64>,
+}
+
+/// Parse a GitHub `owner/repo` slug from a remote URL or a bare `owner/repo`.
+/// Handles `https://github.com/owner/repo(.git)`, `git@github.com:owner/repo.git`
+/// and `owner/repo`. Returns `None` for anything that isn't GitHub-shaped.
+pub fn parse_slug(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    // Strip the transport/host prefix for the URL forms.
+    let rest = if let Some(r) = s.strip_prefix("https://github.com/") {
+        r
+    } else if let Some(r) = s.strip_prefix("http://github.com/") {
+        r
+    } else if let Some(r) = s.strip_prefix("git@github.com:") {
+        r
+    } else if let Some(r) = s.strip_prefix("ssh://git@github.com/") {
+        r
+    } else if !s.contains("://") && !s.contains('@') {
+        // Bare `owner/repo`.
+        s
+    } else {
+        return None;
+    };
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    let mut parts = rest.splitn(3, '/');
+    let owner = parts.next().filter(|p| !p.is_empty())?;
+    let repo = parts.next().filter(|p| !p.is_empty())?;
+    Some((owner.to_string(), repo.to_string()))
 }
 
 impl Task {
@@ -60,6 +109,7 @@ impl Task {
             worktree_path: None,
             accumulated_secs: 0,
             has_notification: false,
+            github: None,
         }
     }
 }
@@ -582,6 +632,21 @@ pub fn default_categories() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_slug_handles_url_forms() {
+        let want = Some(("ogoffart".to_string(), "focuswm".to_string()));
+        assert_eq!(parse_slug("https://github.com/ogoffart/focuswm"), want);
+        assert_eq!(parse_slug("https://github.com/ogoffart/focuswm.git"), want);
+        assert_eq!(parse_slug("https://github.com/ogoffart/focuswm/"), want);
+        assert_eq!(parse_slug("git@github.com:ogoffart/focuswm.git"), want);
+        assert_eq!(parse_slug("ssh://git@github.com/ogoffart/focuswm.git"), want);
+        assert_eq!(parse_slug("ogoffart/focuswm"), want);
+        // Non-GitHub or malformed inputs yield nothing.
+        assert_eq!(parse_slug("https://gitlab.com/ogoffart/focuswm"), None);
+        assert_eq!(parse_slug("/home/olivier/code/focuswm"), None);
+        assert_eq!(parse_slug("ogoffart"), None);
+    }
 
     #[test]
     fn add_assigns_increasing_ids() {

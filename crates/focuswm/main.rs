@@ -17,6 +17,7 @@ use focuswm_shell::{Settings, TaskId, TaskList, WindowId};
 use focuswm_wayland::{Command, Event};
 
 mod config;
+mod github;
 mod gl_bridge;
 mod notify;
 mod persist;
@@ -264,6 +265,16 @@ fn main() -> anyhow::Result<()> {
         None => (None, None),
     };
     let tray_items: Rc<RefCell<Vec<TrayIcon>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // GitHub integration (only when GITHUB_TOKEN is set): wizard issue search and
+    // background polling of linked issues/PRs for new activity.
+    let github = github::spawn();
+    ui.global::<AppData>().set_github_enabled(github.is_some());
+    let issue_results_model = Rc::new(VecModel::<IssueResult>::default());
+    ui.global::<AppData>()
+        .set_issue_results(ModelRc::from(issue_results_model.clone()));
+    // The issue the user picked in the wizard to link to the next created task.
+    let pending_link: Rc<RefCell<Option<focuswm_shell::GithubLink>>> = Rc::new(RefCell::new(None));
 
     let toasts: Rc<RefCell<Vec<ToastState>>> = Rc::new(RefCell::new(Vec::new()));
     let refresh_toasts: Rc<dyn Fn()> = {
@@ -516,6 +527,7 @@ fn main() -> anyhow::Result<()> {
         let terminal_cmd = terminal_cmd.clone();
         let mark_active = mark_active.clone();
         let toast_tx = toast_tx.clone();
+        let pending_link = pending_link.clone();
         move |name, category, branch, repo| {
             mark_active();
             {
@@ -529,6 +541,8 @@ fn main() -> anyhow::Result<()> {
                     if !repo.is_empty() {
                         task.repo = Some(repo.to_string());
                     }
+                    // Attach the issue/PR picked in the wizard, if any.
+                    task.github = pending_link.borrow_mut().take();
                 }
                 list.record_repo(repo.as_str());
                 list.set_active(id, now_secs());
@@ -538,6 +552,55 @@ fn main() -> anyhow::Result<()> {
             persist::save(&tasks.borrow());
             // Auto-open a terminal in the new task.
             spawn_client(&terminal_cmd(), &spawn_env.borrow(), None, &toast_tx);
+        }
+    });
+
+    // Wizard: run a GitHub issue/PR search (results arrive async via GhEvent).
+    ui.global::<Logic>().on_search_issues({
+        let requests = github.as_ref().map(|g| g.requests.clone());
+        let weak = weak.clone();
+        let toast_tx = toast_tx.clone();
+        move |query| {
+            let query = query.trim().to_string();
+            if query.is_empty() {
+                return;
+            }
+            let Some(requests) = &requests else {
+                internal_toast(&toast_tx, "focuswm", "GitHub disabled", "Set GITHUB_TOKEN to search issues.");
+                return;
+            };
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<AppData>().set_issue_searching(true);
+            }
+            let _ = requests.send(github::Request::Search { query });
+        }
+    });
+
+    // Wizard: select (or clear, with an empty slug) the issue to link to the
+    // task being created, and reflect the selection in the results list.
+    ui.global::<Logic>().on_link_issue({
+        let pending_link = pending_link.clone();
+        let issue_results_model = issue_results_model.clone();
+        move |slug, number, title, url| {
+            if slug.is_empty() {
+                *pending_link.borrow_mut() = None;
+                issue_results_model.set_vec(Vec::new());
+                return;
+            }
+            *pending_link.borrow_mut() = Some(focuswm_shell::GithubLink {
+                slug: slug.to_string(),
+                number: number as u64,
+                title: title.to_string(),
+                url: url.to_string(),
+                last_seen: None,
+            });
+            // Mark the chosen row selected, the rest not.
+            for i in 0..issue_results_model.row_count() {
+                if let Some(mut r) = issue_results_model.row_data(i) {
+                    r.selected = r.number == number && r.slug == slug;
+                    issue_results_model.set_row_data(i, r);
+                }
+            }
         }
     });
 
@@ -1316,6 +1379,10 @@ fn main() -> anyhow::Result<()> {
         // When client damage (a new buffer) last arrived; we keep compositing for
         // a short tail afterwards, then let the window idle.
         let last_damage = std::cell::Cell::new(Instant::now() - Duration::from_secs(1));
+        let github_events = github.as_ref().map(|g| g.events.clone());
+        let issue_results_model = issue_results_model.clone();
+        let pending_link = pending_link.clone();
+        let toast_tx = toast_tx.clone();
         move || {
             let mut dirty_windows = false;
             while let Ok(event) = rx.try_recv() {
@@ -1669,6 +1736,81 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // GitHub results: search hits populate the wizard; activity on a
+            // linked issue/PR raises the task's dot and posts a toast.
+            if let Some(events) = &github_events {
+                let mut tasks_dirty = false;
+                while let Ok(ev) = events.try_recv() {
+                    match ev {
+                        github::GhEvent::SearchResults(hits) => {
+                            let selected = pending_link.borrow().clone();
+                            let rows: Vec<IssueResult> = hits
+                                .into_iter()
+                                .map(|h| IssueResult {
+                                    selected: selected
+                                        .as_ref()
+                                        .is_some_and(|s| s.slug == h.slug && s.number == h.number),
+                                    slug: h.slug.into(),
+                                    number: h.number as i32,
+                                    title: h.title.into(),
+                                    url: h.url.into(),
+                                })
+                                .collect();
+                            issue_results_model.set_vec(rows);
+                            if let Some(ui) = weak.upgrade() {
+                                ui.global::<AppData>().set_issue_searching(false);
+                            }
+                        }
+                        github::GhEvent::Activity { task_id, updated_at, url, title } => {
+                            let tid = focuswm_shell::TaskId(task_id);
+                            // Set on genuinely new activity: (slug, number) to toast.
+                            let mut alert: Option<(String, u64)> = None;
+                            {
+                                let mut list = tasks.borrow_mut();
+                                if let Some(task) = list.get_mut(tid) {
+                                    if let Some(link) = task.github.as_mut() {
+                                        link.url = url;
+                                        link.title = title.clone();
+                                        match link.last_seen {
+                                            // First observation: record a baseline,
+                                            // don't alert for pre-existing activity.
+                                            None => link.last_seen = Some(updated_at),
+                                            Some(prev) if updated_at > prev => {
+                                                link.last_seen = Some(updated_at);
+                                                alert = Some((link.slug.clone(), link.number));
+                                            }
+                                            Some(_) => {}
+                                        }
+                                    }
+                                }
+                                if alert.is_some() {
+                                    list.notify(tid);
+                                }
+                            }
+                            if let Some((slug, number)) = alert {
+                                tasks_dirty = true;
+                                internal_toast(
+                                    &toast_tx,
+                                    "GitHub",
+                                    &format!("New activity on {slug}#{number}"),
+                                    &title,
+                                );
+                            }
+                        }
+                        github::GhEvent::Error(msg) => {
+                            if let Some(ui) = weak.upgrade() {
+                                ui.global::<AppData>().set_issue_searching(false);
+                            }
+                            internal_toast(&toast_tx, "GitHub", "Request failed", &msg);
+                        }
+                    }
+                }
+                if tasks_dirty {
+                    persist::save(&tasks.borrow());
+                    refresh_tasks();
+                }
+            }
+
             // Keep the compositor output sized to the host window's content area.
             if let Some(ui) = weak.upgrade() {
                 // Floating frames keep their size; re-clamp them when the content
@@ -1758,6 +1900,31 @@ fn main() -> anyhow::Result<()> {
             }
         }
     });
+
+    // Poll linked GitHub issues/PRs for new activity: shortly after start and
+    // then every couple of minutes. Results arrive as GhEvent::Activity.
+    let github_poll_timer = slint::Timer::default();
+    if let Some(requests) = github.as_ref().map(|g| g.requests.clone()) {
+        let poll: Rc<dyn Fn()> = {
+            let tasks = tasks.clone();
+            Rc::new(move || {
+                for t in tasks.borrow().tasks() {
+                    if let Some(link) = &t.github {
+                        let _ = requests.send(github::Request::Poll {
+                            task_id: t.id.0,
+                            slug: link.slug.clone(),
+                            number: link.number,
+                        });
+                    }
+                }
+            })
+        };
+        poll();
+        github_poll_timer.start(slint::TimerMode::Repeated, Duration::from_secs(150), {
+            let poll = poll.clone();
+            move || poll()
+        });
+    }
 
     ui.run()?;
 

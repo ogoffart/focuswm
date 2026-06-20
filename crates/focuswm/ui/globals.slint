@@ -7,6 +7,15 @@ export struct ReportRow {
     week: string,
 }
 
+// A GitHub issue/PR search result shown in the wizard.
+export struct IssueResult {
+    slug: string,      // owner/repo
+    number: int,
+    title: string,
+    url: string,
+    selected: bool,    // whether it's the one linked to the new task
+}
+
 // One bar of the weekly graph.
 export struct DayBar {
     label: string,    // weekday, e.g. "Mon"
@@ -82,6 +91,11 @@ export global AppData {
     // Live clock, updated by the host.
     in property <string> clock-time: "--:--";
     in property <string> clock-date: "";
+    // GitHub issue/PR search results for the wizard, and whether a search is
+    // running. `github-enabled` is false when no GITHUB_TOKEN is configured.
+    in property <[IssueResult]> issue-results;
+    in property <bool> issue-searching: false;
+    in property <bool> github-enabled: false;
 }
 
 // Actions the UI invokes; the host handles them.
@@ -102,6 +116,10 @@ export global Logic {
     callback open-task-settings(int /* id */);
     // Save edited task properties: id, name, category, colour-palette index.
     callback save-task-settings(int /* id */, string /* name */, string /* category */, int /* color-index */);
+    // GitHub issue/PR search for the wizard, and linking a result to the task
+    // being created (pass an empty slug / number 0 to clear the selection).
+    callback search-issues(string /* query */);
+    callback link-issue(string /* slug */, int /* number */, string /* title */, string /* url */);
     // Task header actions.
     callback open-browser();
     callback open-terminal();

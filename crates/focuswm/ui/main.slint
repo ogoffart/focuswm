@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { AppData, Logic, ReportData, SettingsData, TaskSettingsData, ReportRow } from "globals.slint";
+import { AppData, Logic, ReportData, SettingsData, TaskSettingsData, ReportRow, IssueResult } from "globals.slint";
 import { TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { Wizard } from "wizard.slint";
@@ -10,7 +10,7 @@ import { Report } from "report.slint";
 import { LockScreen } from "lock.slint";
 import { Palette } from "std-widgets.slint";
 
-export { AppData, Logic, ReportData, SettingsData, TaskSettingsData, ReportRow, TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon, Theme }
+export { AppData, Logic, ReportData, SettingsData, TaskSettingsData, ReportRow, IssueResult, TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon, Theme }
 
 // A positioned client surface (popup or layer-shell) rendered as a GL texture,
 // forwarding pointer + keyboard to its Wayland surface.
