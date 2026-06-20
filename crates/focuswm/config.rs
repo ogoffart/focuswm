@@ -92,13 +92,18 @@ pub fn spawn(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>) -> Result<(), St
         .env("QT_QPA_PLATFORM", "wayland")
         // Make Firefox/Thunderbird use our Wayland socket rather than XWayland.
         .env("MOZ_ENABLE_WAYLAND", "1");
-    // Point X11-only apps at our XWayland server, if it's up.
+    // Point X11-only apps at our XWayland server. When it isn't up, force an
+    // empty DISPLAY so X11 clients fail to connect rather than fall through to
+    // the X server of the session focuswm runs in (which would make them open
+    // in the parent session). Also clear XAUTHORITY so a stale cookie can't
+    // authorize them against that parent X server.
     match env.x_display {
         Some(n) => {
             command.env("DISPLAY", format!(":{n}"));
         }
         None => {
-            command.env_remove("DISPLAY");
+            command.env("DISPLAY", "");
+            command.env_remove("XAUTHORITY");
         }
     }
     if let Some(dir) = cwd {

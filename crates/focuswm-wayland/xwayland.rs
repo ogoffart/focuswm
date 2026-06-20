@@ -52,6 +52,7 @@ pub fn setup(handle: &LoopHandle<'static, FocusState>, dh: &DisplayHandle) {
             } => match X11Wm::start_wm(loop_handle.clone(), x11_socket, client.clone()) {
                 Ok(wm) => {
                     state.xwm = Some(wm);
+                    state.x_display = Some(display_number);
                     log::info!("xwayland: ready on DISPLAY=:{display_number}");
                     let _ = state.events.send(Event::XwaylandReady {
                         display: display_number,

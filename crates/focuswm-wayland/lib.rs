@@ -344,6 +344,7 @@ pub fn run(
         popups: std::collections::HashMap::new(),
         layer_surfaces: std::collections::HashMap::new(),
         xwm: None,
+        x_display: None,
         xwayland_shell_state,
         x11_windows: std::collections::HashMap::new(),
         surface_pixels: std::collections::HashMap::new(),
@@ -435,6 +436,23 @@ pub fn run(
 
     // Start XWayland so X11 apps can run (best-effort; needs the Xwayland binary).
     xwayland::setup(&handle, &dh);
+
+    // Pump the loop until XWayland is ready (or a short timeout) before telling
+    // the UI we're up. The UI gates all client launches — including the
+    // auto-opened terminal — on this `Ready`, so by holding it until `DISPLAY`
+    // is known, X11 clients never race ahead and connect to the X server of the
+    // session focuswm itself runs in. If XWayland can't start, we give up after
+    // the timeout and run Wayland-only.
+    let xwayland_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while state.x_display.is_none() && std::time::Instant::now() < xwayland_deadline {
+        event_loop
+            .dispatch(Some(Duration::from_millis(50)), &mut state)
+            .context("event loop failed while waiting for XWayland")?;
+        let _ = state.display_handle.flush_clients();
+    }
+    if state.x_display.is_none() {
+        log::warn!("xwayland: not ready after timeout; X11 apps will be unavailable");
+    }
 
     log::info!("focuswm listening on {runtime_dir}/{socket_name}");
     let _ = events.send(Event::Ready {
