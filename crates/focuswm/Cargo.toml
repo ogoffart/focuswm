@@ -8,7 +8,7 @@ default-run = "focuswm"
 
 [[bin]]
 name = "focuswm"
-path = "src/main.rs"
+path = "main.rs"
 
 [dependencies]
 focuswm-wayland.workspace = true

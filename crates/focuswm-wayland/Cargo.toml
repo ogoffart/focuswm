@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+path = "lib.rs"
+
 [dependencies]
 focuswm-shell = { workspace = true }
 focuswm-render = { workspace = true }
