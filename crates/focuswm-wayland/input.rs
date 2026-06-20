@@ -526,30 +526,46 @@ mod tests {
     }
 
     #[test]
-    fn symbols_block_close_skips_nested_braces() {
+    fn symbols_block_close_finds_the_block_brace() {
         let close = symbols_block_close(BASE).expect("symbols block close");
-        // The brace it finds must close xkb_symbols: everything after is just the
-        // outer keymap close.
-        assert_eq!(BASE[close..].trim_start_matches('}').trim(), "};");
-        // And the inner `key { … }` braces must not have tripped it up.
+        // It points at a `}` that closes xkb_symbols — the nested `key { … }`
+        // brace didn't trip it up (the `key` line is before it) and only the
+        // keymap's own closing brace remains after it.
+        assert_eq!(BASE.as_bytes()[close], b'}');
         assert!(BASE[..close].contains("key <ESC>"));
+        assert_eq!(BASE[close + 1..].matches('}').count(), 1);
     }
 
+    /// The real test: splice slots onto the actual compiled US keymap, compile
+    /// the result, and confirm each slot keycode resolves to exactly its char.
     #[test]
-    fn build_keymap_appends_valid_looking_slots() {
-        let km = build_keymap(BASE, &['a', 'é'], 720);
-        // Maximum was raised to cover the two slots (720, 721).
-        assert_eq!(parse_maximum(&km), Some(722));
-        // Slot keycodes declared in the keycodes block (before xkb_types).
-        let kc_a = km.find("<Z000> = 720;").expect("slot a keycode");
-        let kc_e = km.find("<Z001> = 721;").expect("slot é keycode");
-        assert!(kc_a < km.find("xkb_types").unwrap());
-        assert!(kc_e < km.find("xkb_types").unwrap());
-        // Symbols map the slots to the right Unicode keysyms, inside xkb_symbols.
-        let sym_a = km.find("key <Z000> { [ U0061 ] };").expect("slot a symbol");
-        let sym_e = km.find("key <Z001> { [ U00E9 ] };").expect("slot é symbol");
-        let sym_block = km.find("xkb_symbols").unwrap();
-        assert!(sym_a > sym_block && sym_e > sym_block);
+    fn built_keymap_compiles_and_slots_type_their_chars() {
+        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let base =
+            xkb::Keymap::new_from_names(&ctx, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .expect("compile base keymap")
+                .get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+        let slot_base = parse_maximum(&base).unwrap() + 12;
+        let chars = ['a', 'é', '~', 'ß', '€'];
+
+        let keymap_str = build_keymap(&base, &chars, slot_base);
+        let keymap = xkb::Keymap::new_from_string(
+            &ctx,
+            keymap_str,
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .expect("spliced keymap must compile");
+
+        let state = xkb::State::new(&keymap);
+        for (i, c) in chars.iter().enumerate() {
+            let kc = xkb::Keycode::new(slot_base + i as u32);
+            assert_eq!(
+                state.key_get_utf8(kc),
+                c.to_string(),
+                "slot {i} should type {c:?}"
+            );
+        }
     }
 
     #[test]
