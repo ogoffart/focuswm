@@ -14,20 +14,25 @@ use focuswm_shell::WindowId;
 use crate::state::FocusState;
 use crate::{Command, Event};
 
-/// Compiles a fresh keymap so the focused client can receive arbitrary composed
-/// Unicode characters — accents, AltGr layers, dead-key results — independent of
-/// the host keyboard layout. The host (the UI toolkit) already does the layout +
-/// composition work and hands us the final text; we just need to deliver that
-/// exact character to the client.
+/// Lets the focused client receive arbitrary composed Unicode characters —
+/// accents, AltGr layers, dead-key results — independent of the host keyboard
+/// layout. The host (the UI toolkit) already does the layout + composition work
+/// and hands us the final text; we just need to deliver that exact character.
 ///
 /// Approach (à la `wtype`): take the base US keymap and append one keycode
-/// "slot" per distinct character we are asked to type, mapping that slot to the
-/// character's Unicode keysym. The keymap is only rebuilt and re-uploaded when a
-/// *new* character first appears, so steady-state typing reuses a stable keymap.
+/// "slot" per character, mapping that slot to the character's Unicode keysym.
+///
+/// Crucially, the keymap is **primed once at startup** with a broad range of
+/// common characters (ASCII + Latin-1 + Latin Extended-A + a few symbols) and
+/// installed before any client connects, so clients receive it normally on
+/// focus and the keymap never changes underneath them while they're focused —
+/// swapping a focused client's keymap mid-stream wedges some toolkits (GTK)
+/// until they're re-focused. Characters outside the primed set still fall back
+/// to extending the keymap on demand, which is rare for Latin-script text.
 #[derive(Default)]
 pub struct TextInput {
-    /// Base keymap (xkb text format) we append Unicode slots to; empty until the
-    /// first character is typed (or if compiling the base layout failed).
+    /// Base keymap (xkb text format) we append Unicode slots to; empty until
+    /// primed (or if compiling the base layout failed).
     base: String,
     /// First xkb keycode used for a slot (just past the base keymap's maximum).
     slot_base: u32,
@@ -43,25 +48,70 @@ pub struct TextInput {
 /// names within xkb's 4-character limit: `Z000`..`ZFFF`).
 const MAX_SLOTS: usize = 0xFFF;
 
+/// Characters to pre-assign slots for at startup so typical (Latin-script) text
+/// never forces a mid-session keymap change: printable ASCII, the Latin-1
+/// Supplement and Latin Extended-A (European accents, œ/æ, …), plus the common
+/// "smart" punctuation and the euro sign.
+fn primed_chars() -> Vec<char> {
+    let mut chars: Vec<char> = Vec::new();
+    chars.extend((0x20u32..=0x7E).filter_map(char::from_u32)); // printable ASCII
+    chars.extend((0xA0u32..=0xFF).filter_map(char::from_u32)); // Latin-1 Supplement
+    chars.extend((0x100u32..=0x17F).filter_map(char::from_u32)); // Latin Extended-A
+    chars.extend(
+        [
+            0x20AC, // €
+            0x2013, 0x2014, // – —
+            0x2018, 0x2019, // ‘ ’
+            0x201C, 0x201D, // “ ”
+            0x2026, // …
+        ]
+        .into_iter()
+        .filter_map(char::from_u32),
+    );
+    chars
+}
+
 impl TextInput {
+    /// Compile the base US keymap once. Returns false if it can't be compiled.
+    fn ensure_base(&mut self) -> bool {
+        if !self.base.is_empty() {
+            return true;
+        }
+        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        // Empty names == the system default layout, matching the seat's
+        // `XkbConfig::default()`, so base keys (Enter, Ctrl+C, …) behave the
+        // same once this keymap takes over.
+        let Some(keymap) =
+            xkb::Keymap::new_from_names(&ctx, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+        else {
+            return false;
+        };
+        self.base = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+        self.slot_base = parse_maximum(&self.base).unwrap_or(255) + 12;
+        true
+    }
+
+    /// Build the startup keymap with the common characters pre-assigned, to be
+    /// installed on the seat before any client connects. `None` if the base
+    /// keymap can't be compiled.
+    pub fn prime(&mut self) -> Option<String> {
+        if !self.ensure_base() {
+            return None;
+        }
+        for c in primed_chars() {
+            let _ = self.keycode_for(c);
+        }
+        self.dirty = false; // the returned keymap already covers them
+        Some(build_keymap(&self.base, &self.chars, self.slot_base))
+    }
+
     /// The xkb keycode that types `c`, assigning a new slot if needed. Returns
     /// `None` only if the base keymap can't be compiled or we're out of slots.
     fn keycode_for(&mut self, c: char) -> Option<u32> {
         if let Some(&kc) = self.by_char.get(&c) {
             return Some(kc);
         }
-        if self.base.is_empty() {
-            let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-            // Empty names == the system default layout, matching the seat's
-            // `XkbConfig::default()`, so base keys (Enter, Ctrl+C, …) behave the
-            // same once this keymap takes over.
-            let keymap = xkb::Keymap::new_from_names(
-                &ctx, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS,
-            )?;
-            self.base = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
-            self.slot_base = parse_maximum(&self.base).unwrap_or(255) + 12;
-        }
-        if self.chars.len() >= MAX_SLOTS {
+        if !self.ensure_base() || self.chars.len() >= MAX_SLOTS {
             return None;
         }
         let kc = self.slot_base + self.chars.len() as u32;

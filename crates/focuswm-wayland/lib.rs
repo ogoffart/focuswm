@@ -363,6 +363,18 @@ pub fn run(
         text_input: Default::default(),
     };
 
+    // Install a keymap pre-loaded with common Unicode characters before any
+    // client connects, so text input works for any layout without ever swapping
+    // a focused client's keymap (which wedges some toolkits). Best-effort: if the
+    // base keymap can't be compiled, fall back to the default US keymap.
+    if let Some(keymap) = state.text_input.prime() {
+        if let Some(keyboard) = state.seat.get_keyboard() {
+            if let Err(err) = keyboard.set_keymap_from_string(&mut state, keymap) {
+                log::warn!("failed to install Unicode keymap: {err:?}");
+            }
+        }
+    }
+
     if state.dmabuf_enabled {
         use smithay::backend::allocator::{Format, Fourcc, Modifier};
         // Advertise common 32-bit formats with implicit/linear modifiers. The

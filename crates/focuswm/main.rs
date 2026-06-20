@@ -59,10 +59,13 @@ struct WinMeta {
     /// Floating frame geometry in content-area logical px: top-left `(x, y)` and
     /// whole-frame size `(w, h)` (the title bar is the top `TITLE_BAR_H` of it).
     geom: WinGeom,
+    /// Geometry to restore to when unmaximizing/unsnapping (the frame from just
+    /// before the last maximize/snap), if any.
+    restore: Option<WinGeom>,
 }
 
 /// A floating window's frame rectangle, in content-area logical px.
-#[derive(Default, Clone, Copy, PartialEq, Debug)]
+#[derive(Default, Clone, Copy)]
 struct WinGeom {
     x: f32,
     y: f32,
@@ -96,35 +99,6 @@ fn default_geom(id: u64, cw: f32, ch: f32) -> WinGeom {
     let mut geom = WinGeom { x: 20.0 + off, y: 16.0 + off, w, h };
     geom.clamp_pos(cw, ch);
     geom
-}
-
-/// The frame a window should snap to when its title bar is released with the
-/// cursor at `(px, py)` in content-area logical px, or `None` outside any zone:
-/// top edge → maximize, left/right edge → half, the four corners → quarters.
-fn snap_geom(px: f32, py: f32, cw: f32, ch: f32) -> Option<WinGeom> {
-    if cw <= 0.0 || ch <= 0.0 {
-        return None;
-    }
-    let edge = 40.0_f32.min(cw * 0.25).min(ch * 0.25);
-    let (hw, hh) = (cw / 2.0, ch / 2.0);
-    let near_top = py <= edge;
-    let near_bottom = py >= ch - edge;
-    let near_left = px <= edge;
-    let near_right = px >= cw - edge;
-    // A corner counts when near a vertical edge and within the outer fifth.
-    let on_left = px <= cw * 0.2;
-    let on_right = px >= cw * 0.8;
-    let g = |x: f32, y: f32, w: f32, h: f32| Some(WinGeom { x, y, w, h });
-    match () {
-        _ if near_top && on_left => g(0.0, 0.0, hw, hh),
-        _ if near_top && on_right => g(hw, 0.0, hw, hh),
-        _ if near_bottom && on_left => g(0.0, hh, hw, hh),
-        _ if near_bottom && on_right => g(hw, hh, hw, hh),
-        _ if near_top => g(0.0, 0.0, cw, ch),
-        _ if near_left => g(0.0, 0.0, hw, ch),
-        _ if near_right => g(hw, 0.0, hw, ch),
-        _ => None,
-    }
 }
 
 /// UI-thread state shared between the event pump and the rendering notifier.
@@ -384,9 +358,10 @@ fn main() -> anyhow::Result<()> {
         Rc::new(move || {
             let list = tasks.borrow();
             let mut shared = shared.borrow_mut();
+            let focused_win = *focused.borrow();
             let mut active_windows = list.active_windows();
             // Render the focused window last so it stacks on top.
-            if let Some(f) = *focused.borrow() {
+            if let Some(f) = focused_win {
                 if let Some(pos) = active_windows.iter().position(|w| *w == f) {
                     let w = active_windows.remove(pos);
                     active_windows.push(w);
@@ -423,11 +398,32 @@ fn main() -> anyhow::Result<()> {
                     decorated,
                     minimized: list.is_minimized(*wid),
                     maximized: list.is_maximized(*wid),
+                    focused: focused_win == Some(*wid),
                 });
                 rows.insert(id, row);
             }
             shared.rows = rows;
             windows_model.set_vec(tiles);
+        })
+    };
+
+    // Update just the `focused` highlight on each window row, without rebuilding
+    // or restacking. Used when focus-follows-mouse moves focus on hover (where a
+    // full rebuild would churn the z-order as the pointer travels).
+    let refresh_focus_highlight: Rc<dyn Fn()> = {
+        let windows_model = windows_model.clone();
+        let focused = focused.clone();
+        Rc::new(move || {
+            let f = focused.borrow().map(|w| w.0 as i32);
+            for row in 0..windows_model.row_count() {
+                if let Some(mut t) = windows_model.row_data(row) {
+                    let want = f == Some(t.id);
+                    if t.focused != want {
+                        t.focused = want;
+                        windows_model.set_row_data(row, t);
+                    }
+                }
+            }
         })
     };
 
@@ -1062,66 +1058,6 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Live snap preview: while dragging a title bar, highlight the region the
-    // window would snap to (or hide the hint when outside any zone).
-    ui.global::<Logic>().on_preview_snap({
-        let shared = shared.clone();
-        let weak = weak.clone();
-        move |px, py| {
-            let (cw, ch) = shared.borrow().content;
-            let Some(ui) = weak.upgrade() else { return };
-            let data = ui.global::<AppData>();
-            match snap_geom(px, py, cw, ch) {
-                Some(g) => {
-                    data.set_snap_preview_x(g.x);
-                    data.set_snap_preview_y(g.y);
-                    data.set_snap_preview_w(g.w);
-                    data.set_snap_preview_h(g.h);
-                    data.set_snap_preview_visible(true);
-                }
-                None => data.set_snap_preview_visible(false),
-            }
-        }
-    });
-
-    // Title-bar drag released: snap to the zone under the cursor (if any), then
-    // raise/focus the window. Clears the preview either way.
-    ui.global::<Logic>().on_snap_window({
-        let shared = shared.clone();
-        let cmd_tx = cmd_tx.clone();
-        let focused = focused.clone();
-        let rebuild_windows = rebuild_windows.clone();
-        let mark_active = mark_active.clone();
-        let weak = weak.clone();
-        move |id, px, py| {
-            mark_active();
-            if let Some(ui) = weak.upgrade() {
-                ui.global::<AppData>().set_snap_preview_visible(false);
-            }
-            let id = id as u64;
-            let resize = {
-                let mut s = shared.borrow_mut();
-                let (cw, ch) = s.content;
-                match snap_geom(px, py, cw, ch) {
-                    Some(g) => {
-                        let decorated = s.meta.get(&id).map(|m| m.decorated).unwrap_or(true);
-                        if let Some(m) = s.meta.get_mut(&id) {
-                            m.geom = g;
-                        }
-                        Some(g.content_size(decorated))
-                    }
-                    None => None,
-                }
-            };
-            if let Some((w, h)) = resize {
-                let _ = cmd_tx.send(Command::ResizeWindow { id: WindowId(id), width: w, height: h });
-            }
-            *focused.borrow_mut() = Some(WindowId(id));
-            let _ = cmd_tx.send(Command::FocusWindow(WindowId(id)));
-            rebuild_windows();
-        }
-    });
-
     // Toggle a window's minimized state (hidden from the content area, still
     // listed in the sidebar). Restoring also raises/focuses it.
     ui.global::<Logic>().on_minimize_window({
@@ -1141,10 +1077,12 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Toggle a window's maximized state (tells the client + sizes it to output).
+    // Toggle a window's maximized state: fill the content area (saving the
+    // current frame to restore later), or restore the saved frame.
     ui.global::<Logic>().on_maximize_window({
         let cmd_tx = cmd_tx.clone();
         let tasks = tasks.clone();
+        let shared = shared.clone();
         let rebuild_windows = rebuild_windows.clone();
         let mark_active = mark_active.clone();
         move |id| {
@@ -1152,8 +1090,57 @@ fn main() -> anyhow::Result<()> {
             let wid = WindowId(id as u64);
             let maximized = !tasks.borrow().is_maximized(wid);
             tasks.borrow_mut().set_maximized(wid, maximized);
-            rebuild_windows();
+            {
+                let mut s = shared.borrow_mut();
+                let (cw, ch) = s.content;
+                if let Some(meta) = s.meta.get_mut(&wid.0) {
+                    if maximized {
+                        meta.restore = Some(meta.geom);
+                        meta.geom = WinGeom { x: 0.0, y: 0.0, w: cw, h: ch };
+                    } else {
+                        meta.geom = meta.restore.take().unwrap_or(meta.geom);
+                    }
+                    let (w, h) = meta.geom.content_size(meta.decorated);
+                    let _ = cmd_tx.send(Command::ResizeWindow { id: wid, width: w, height: h });
+                }
+            }
             let _ = cmd_tx.send(Command::SetMaximized { id: wid, maximized });
+            rebuild_windows();
+        }
+    });
+
+    // Snap a window to a screen region (1=left half, 2=right half, 3=maximize).
+    ui.global::<Logic>().on_snap_window({
+        let cmd_tx = cmd_tx.clone();
+        let tasks = tasks.clone();
+        let shared = shared.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let mark_active = mark_active.clone();
+        move |id, zone| {
+            mark_active();
+            let wid = WindowId(id as u64);
+            {
+                let mut s = shared.borrow_mut();
+                let (cw, ch) = s.content;
+                if let Some(meta) = s.meta.get_mut(&wid.0) {
+                    // Remember the pre-snap frame so a later restore brings it back.
+                    if meta.restore.is_none() {
+                        meta.restore = Some(meta.geom);
+                    }
+                    meta.geom = match zone {
+                        1 => WinGeom { x: 0.0, y: 0.0, w: cw / 2.0, h: ch },
+                        2 => WinGeom { x: cw / 2.0, y: 0.0, w: cw / 2.0, h: ch },
+                        _ => WinGeom { x: 0.0, y: 0.0, w: cw, h: ch },
+                    };
+                    let (w, h) = meta.geom.content_size(meta.decorated);
+                    let _ = cmd_tx.send(Command::ResizeWindow { id: wid, width: w, height: h });
+                }
+            }
+            // Top-edge snap is a maximize; half-screen snaps are not.
+            let maximized = zone == 3;
+            tasks.borrow_mut().set_maximized(wid, maximized);
+            let _ = cmd_tx.send(Command::SetMaximized { id: wid, maximized });
+            rebuild_windows();
         }
     });
 
@@ -1163,6 +1150,7 @@ fn main() -> anyhow::Result<()> {
         let tasks = tasks.clone();
         let shared = shared.clone();
         let focused = focused.clone();
+        let refresh_focus_highlight = refresh_focus_highlight.clone();
         move |id, x, y| {
             mark_active();
             let wid = WindowId(id as u64);
@@ -1175,6 +1163,7 @@ fn main() -> anyhow::Result<()> {
             {
                 *focused.borrow_mut() = Some(wid);
                 let _ = cmd_tx.send(Command::FocusWindow(wid));
+                refresh_focus_highlight();
             }
             let _ = cmd_tx.send(Command::PointerMotion {
                 id: wid,
@@ -1598,14 +1587,21 @@ fn main() -> anyhow::Result<()> {
                 }
                 // New client frames are uploaded to GL textures in the rendering
                 // notifier's `BeforeRendering` hook, which only runs when the
-                // window actually repaints. This timer tick doesn't repaint on
-                // its own, so without a nudge here a client that redraws without
-                // any host-side input (e.g. text appearing as you type, a video,
-                // a blinking cursor) would only surface on the next unrelated
-                // redraw — typically a mouse click. Request a repaint whenever
-                // frames are waiting to be uploaded.
-                let s = shared.borrow();
-                if !s.pending.is_empty() || !s.pending_dmabuf.is_empty() {
+                // window actually repaints — and a client redraws (hover
+                // highlights, a blinking cursor, video, text as you type)
+                // without any host-side input. A one-shot `request_redraw` per
+                // arrived frame proved unreliable (coalesced/dropped while idle),
+                // so — like a real compositor — composite every tick while any
+                // client window is on screen, plus while a UI animation plays.
+                let live = {
+                    let s = shared.borrow();
+                    !s.rows.is_empty()
+                        || !s.popup_rows.is_empty()
+                        || !s.layer_rows.is_empty()
+                        || !s.pending.is_empty()
+                        || !s.pending_dmabuf.is_empty()
+                };
+                if live || ui.window().has_active_animations() {
                     ui.window().request_redraw();
                 }
             }
@@ -2163,23 +2159,6 @@ fn evdev_keycode(text: &str) -> Option<(u32, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn snap_zones_map_to_expected_frames() {
-        let (cw, ch) = (1000.0_f32, 800.0_f32);
-        // Top-centre maximizes.
-        assert_eq!(snap_geom(500.0, 5.0, cw, ch), Some(WinGeom { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 }));
-        // Corners become quarters.
-        assert_eq!(snap_geom(5.0, 5.0, cw, ch), Some(WinGeom { x: 0.0, y: 0.0, w: 500.0, h: 400.0 }));
-        assert_eq!(snap_geom(995.0, 5.0, cw, ch), Some(WinGeom { x: 500.0, y: 0.0, w: 500.0, h: 400.0 }));
-        assert_eq!(snap_geom(5.0, 795.0, cw, ch), Some(WinGeom { x: 0.0, y: 400.0, w: 500.0, h: 400.0 }));
-        assert_eq!(snap_geom(995.0, 795.0, cw, ch), Some(WinGeom { x: 500.0, y: 400.0, w: 500.0, h: 400.0 }));
-        // Side edges become halves.
-        assert_eq!(snap_geom(5.0, 400.0, cw, ch), Some(WinGeom { x: 0.0, y: 0.0, w: 500.0, h: 800.0 }));
-        assert_eq!(snap_geom(995.0, 400.0, cw, ch), Some(WinGeom { x: 500.0, y: 0.0, w: 500.0, h: 800.0 }));
-        // The middle is no zone.
-        assert_eq!(snap_geom(500.0, 400.0, cw, ch), None);
-    }
 
     #[test]
     fn evdev_letters_and_shift() {

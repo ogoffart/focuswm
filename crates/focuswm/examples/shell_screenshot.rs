@@ -128,9 +128,10 @@ fn main() {
             y: 50.0,
             width: 720.0,
             height: 520.0,
-            decorated: false,
+            decorated: true,
             minimized: false,
             maximized: false,
+            focused: false,
         },
         WindowTile {
             id: 11,
@@ -140,9 +141,10 @@ fn main() {
             y: 230.0,
             width: 560.0,
             height: 380.0,
-            decorated: false,
+            decorated: true,
             minimized: false,
             maximized: false,
+            focused: true,
         },
     ];
     ui.global::<AppData>()
@@ -200,9 +202,10 @@ fn main() {
                 y: 50.0,
                 width: 720.0,
                 height: 520.0,
-                decorated: false,
+                decorated: true,
                 minimized: false,
                 maximized: false,
+                focused: true,
             },
         ]))));
     ui.global::<AppData>().set_active_task(0);
