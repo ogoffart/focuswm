@@ -305,19 +305,34 @@ export component Desktop inherits Window {
     in-out property <bool> launcher-open: false;
     in-out property <bool> locked: false;
     // Active edge-snap zone while dragging a window: 0=none, 1=left half,
-    // 2=right half, 3=maximize.
+    // 2=right half, 3=maximize, 4=top-left, 5=top-right, 6=bottom-left,
+    // 7=bottom-right quarter.
     property <int> snap-zone: 0;
 
     // Which snap zone the (window-global) cursor is in, by proximity to the
     // window-area edges; 0 when not near an edge or outside the area.
     pure function snap-zone-at(gx: length, gy: length) -> int {
-        (gx < windows-area.absolute-position.x
+        gx < windows-area.absolute-position.x
             || gx > windows-area.absolute-position.x + windows-area.width
             || gy < windows-area.absolute-position.y
-            || gy > windows-area.absolute-position.y + windows-area.height) ? 0
-        : (gy - windows-area.absolute-position.y < 12px) ? 3
-        : (gx - windows-area.absolute-position.x < 18px) ? 1
-        : (gx - windows-area.absolute-position.x > windows-area.width - 18px) ? 2
+            || gy > windows-area.absolute-position.y + windows-area.height
+            ? 0
+            : self.snap-zone-local(gx - windows-area.absolute-position.x,
+                                   gy - windows-area.absolute-position.y,
+                                   windows-area.width, windows-area.height)
+    }
+
+    // `lx`/`ly` are cursor coords within the window area of size `w`×`h`. Near
+    // the top/bottom edge and in the outer fifth horizontally → a corner
+    // quarter; along the top → maximize; along a side → that half.
+    pure function snap-zone-local(lx: length, ly: length, w: length, h: length) -> int {
+        ly < 24px && lx < w * 0.2 ? 4
+        : ly < 24px && lx > w * 0.8 ? 5
+        : ly > h - 24px && lx < w * 0.2 ? 6
+        : ly > h - 24px && lx > w * 0.8 ? 7
+        : ly < 24px ? 3
+        : lx < 18px ? 1
+        : lx > w - 18px ? 2
         : 0
     }
 
@@ -413,12 +428,13 @@ export component Desktop inherits Window {
             }
 
             // Edge-snap preview: shown while dragging a window's title bar near
-            // an edge (1=left half, 2=right half, 3=maximize).
+            // an edge (1=left, 2=right half; 3=maximize; 4–7=corner quarters).
             if root.snap-zone != 0: Rectangle {
-                x: root.snap-zone == 2 ? parent.width / 2 : 0px;
-                y: 0px;
+                x: (root.snap-zone == 2 || root.snap-zone == 5 || root.snap-zone == 7)
+                    ? parent.width / 2 : 0px;
+                y: (root.snap-zone == 6 || root.snap-zone == 7) ? parent.height / 2 : 0px;
                 width: root.snap-zone == 3 ? parent.width : parent.width / 2;
-                height: parent.height;
+                height: (root.snap-zone <= 3) ? parent.height : parent.height / 2;
                 background: Theme.accent.with-alpha(0.22);
                 border-width: 2px;
                 border-color: Theme.accent;

@@ -1127,16 +1127,21 @@ fn main() -> anyhow::Result<()> {
                     if meta.restore.is_none() {
                         meta.restore = Some(meta.geom);
                     }
+                    let (hw, hh) = (cw / 2.0, ch / 2.0);
                     meta.geom = match zone {
-                        1 => WinGeom { x: 0.0, y: 0.0, w: cw / 2.0, h: ch },
-                        2 => WinGeom { x: cw / 2.0, y: 0.0, w: cw / 2.0, h: ch },
-                        _ => WinGeom { x: 0.0, y: 0.0, w: cw, h: ch },
+                        1 => WinGeom { x: 0.0, y: 0.0, w: hw, h: ch },        // left half
+                        2 => WinGeom { x: hw, y: 0.0, w: hw, h: ch },         // right half
+                        4 => WinGeom { x: 0.0, y: 0.0, w: hw, h: hh },        // top-left
+                        5 => WinGeom { x: hw, y: 0.0, w: hw, h: hh },         // top-right
+                        6 => WinGeom { x: 0.0, y: hh, w: hw, h: hh },         // bottom-left
+                        7 => WinGeom { x: hw, y: hh, w: hw, h: hh },          // bottom-right
+                        _ => WinGeom { x: 0.0, y: 0.0, w: cw, h: ch },        // maximize
                     };
                     let (w, h) = meta.geom.content_size(meta.decorated);
                     let _ = cmd_tx.send(Command::ResizeWindow { id: wid, width: w, height: h });
                 }
             }
-            // Top-edge snap is a maximize; half-screen snaps are not.
+            // Only the top-edge snap is a true maximize; halves/quarters aren't.
             let maximized = zone == 3;
             tasks.borrow_mut().set_maximized(wid, maximized);
             let _ = cmd_tx.send(Command::SetMaximized { id: wid, maximized });
