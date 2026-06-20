@@ -120,6 +120,8 @@ fn main() -> anyhow::Result<()> {
 
     // The day the report is focused on (the week follows it). Defaults to today.
     let report_anchor = Rc::new(RefCell::new(Local::now().date_naive()));
+    // The window with keyboard focus (drives Alt+Tab and "close window").
+    let focused: Rc<RefCell<Option<WindowId>>> = Rc::new(RefCell::new(None));
 
     let tasks_model = Rc::new(VecModel::<TaskItem>::default());
     let windows_model = Rc::new(VecModel::<WindowTile>::default());
@@ -269,10 +271,18 @@ fn main() -> anyhow::Result<()> {
         let tasks = tasks.clone();
         let shared = shared.clone();
         let windows_model = windows_model.clone();
+        let focused = focused.clone();
         Rc::new(move || {
             let list = tasks.borrow();
             let mut shared = shared.borrow_mut();
-            let active_windows = list.active_windows();
+            let mut active_windows = list.active_windows();
+            // Render the focused window last so it stacks on top.
+            if let Some(f) = *focused.borrow() {
+                if let Some(pos) = active_windows.iter().position(|w| *w == f) {
+                    let w = active_windows.remove(pos);
+                    active_windows.push(w);
+                }
+            }
             let mut tiles = Vec::new();
             let mut rows = HashMap::new();
             for (row, wid) in active_windows.iter().enumerate() {
@@ -393,6 +403,7 @@ fn main() -> anyhow::Result<()> {
         let rebuild_windows = rebuild_windows.clone();
         let now_secs = now_secs.clone();
         let cmd_tx = cmd_tx.clone();
+        let focused = focused.clone();
         let mark_active = mark_active.clone();
         move |id| {
             mark_active();
@@ -402,9 +413,10 @@ fn main() -> anyhow::Result<()> {
                 list.set_active(TaskId(id as u64), now_secs());
             }
             refresh_tasks();
-            rebuild_windows();
             // Focus the active task's first window, if any.
             let first = tasks.borrow().active_windows().first().copied();
+            *focused.borrow_mut() = first;
+            rebuild_windows();
             if let Some(w) = first {
                 let _ = cmd_tx.send(Command::FocusWindow(w));
             }
@@ -689,6 +701,74 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Alt+Tab: cycle the active task's windows (focused one stacks on top).
+    ui.global::<Logic>().on_cycle_window({
+        let tasks = tasks.clone();
+        let focused = focused.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
+        move |forward| {
+            mark_active();
+            let wins = tasks.borrow().active_windows();
+            if wins.is_empty() {
+                return;
+            }
+            let cur = *focused.borrow();
+            let idx = cur
+                .and_then(|c| wins.iter().position(|w| *w == c))
+                .unwrap_or(0);
+            let n = wins.len();
+            let next = if forward { (idx + 1) % n } else { (idx + n - 1) % n };
+            let target = wins[next];
+            *focused.borrow_mut() = Some(target);
+            let _ = cmd_tx.send(Command::FocusWindow(target));
+            rebuild_windows();
+        }
+    });
+
+    // Super+N: switch to the task at the given index.
+    ui.global::<Logic>().on_switch_task_index({
+        let tasks = tasks.clone();
+        let focused = focused.clone();
+        let refresh_tasks = refresh_tasks.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let now_secs = now_secs.clone();
+        let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
+        move |i| {
+            mark_active();
+            let id = tasks.borrow().tasks().get(i as usize).map(|t| t.id);
+            if let Some(id) = id {
+                {
+                    let mut list = tasks.borrow_mut();
+                    list.set_date(&today());
+                    list.set_active(id, now_secs());
+                }
+                refresh_tasks();
+                let first = tasks.borrow().active_windows().first().copied();
+                *focused.borrow_mut() = first;
+                rebuild_windows();
+                if let Some(w) = first {
+                    let _ = cmd_tx.send(Command::FocusWindow(w));
+                }
+            }
+        }
+    });
+
+    // Super+W: close the focused window.
+    ui.global::<Logic>().on_close_active_window({
+        let focused = focused.clone();
+        let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
+        move || {
+            mark_active();
+            if let Some(w) = *focused.borrow() {
+                let _ = cmd_tx.send(Command::CloseWindow(w));
+            }
+        }
+    });
+
     // Dismiss a notification toast.
     ui.global::<Logic>().on_dismiss_notification({
         let toasts = toasts.clone();
@@ -725,10 +805,14 @@ fn main() -> anyhow::Result<()> {
 
     ui.global::<Logic>().on_focus_window({
         let cmd_tx = cmd_tx.clone();
+        let focused = focused.clone();
+        let rebuild_windows = rebuild_windows.clone();
         let mark_active = mark_active.clone();
         move |id| {
             mark_active();
+            *focused.borrow_mut() = Some(WindowId(id as u64));
             let _ = cmd_tx.send(Command::FocusWindow(WindowId(id as u64)));
+            rebuild_windows();
         }
     });
 
@@ -747,9 +831,13 @@ fn main() -> anyhow::Result<()> {
 
     ui.global::<Logic>().on_pointer_button({
         let cmd_tx = cmd_tx.clone();
+        let focused = focused.clone();
         let mark_active = mark_active.clone();
         move |id, x, y, btn, pressed| {
             mark_active();
+            if pressed {
+                *focused.borrow_mut() = Some(WindowId(id as u64));
+            }
             let _ = cmd_tx.send(Command::PointerMotion {
                 id: WindowId(id as u64),
                 x: x as f64,
@@ -797,6 +885,7 @@ fn main() -> anyhow::Result<()> {
         let refresh_toasts = refresh_toasts.clone();
         let tray_model = tray_model.clone();
         let tray_items = tray_items.clone();
+        let focused = focused.clone();
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
         move || {
@@ -816,6 +905,7 @@ fn main() -> anyhow::Result<()> {
                     Event::WindowAdded(id) => {
                         shared.borrow_mut().meta.entry(id.0).or_default();
                         tasks.borrow_mut().assign_window(id);
+                        *focused.borrow_mut() = Some(id);
                         let _ = cmd_tx.send(Command::FocusWindow(id));
                         dirty_windows = true;
                     }
@@ -825,6 +915,15 @@ fn main() -> anyhow::Result<()> {
                         s.meta.remove(&id.0);
                         s.tiles.remove(&id.0);
                         s.closed.push(id.0);
+                        drop(s);
+                        // If the focused window closed, focus another in the task.
+                        if *focused.borrow() == Some(id) {
+                            let next = tasks.borrow().active_windows().last().copied();
+                            *focused.borrow_mut() = next;
+                            if let Some(w) = next {
+                                let _ = cmd_tx.send(Command::FocusWindow(w));
+                            }
+                        }
                         dirty_windows = true;
                     }
                     Event::WindowDecorated { id, decorated } => {

@@ -73,6 +73,21 @@ cargo run           # opens a nested compositor window
 When running nested, focuswm prints the `WAYLAND_DISPLAY` it created; apps
 launched from a task connect to it automatically.
 
+## Keyboard shortcuts
+
+Global shortcuts are intercepted by the compositor before keys reach the focused
+client:
+
+| Shortcut | Action |
+|----------|--------|
+| `Alt`+`Tab` / `Alt`+`Shift`+`Tab` | Cycle windows in the active task |
+| `Super`+`1`…`9` | Switch to task N |
+| `Super`+`Return` | Open a terminal |
+| `Super`+`N` | New task (open the wizard) |
+| `Super`+`W` | Close the focused window |
+| `Super`+`L` | Lock the screen |
+
+
 ### Headless UI preview
 
 ```sh

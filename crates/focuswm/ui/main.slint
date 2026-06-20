@@ -156,7 +156,34 @@ export component Desktop inherits Window {
     in-out property <bool> locked: false;
 
     // Match std-widgets to the dark theme.
-    init => { Palette.color-scheme = ColorScheme.dark; }
+    init => { Palette.color-scheme = ColorScheme.dark; shortcuts.focus(); }
+
+    // Maps a digit key to a 0-based task index, or -1.
+    pure function digit-index(t: string) -> int {
+        t == "1" ? 0 : t == "2" ? 1 : t == "3" ? 2 : t == "4" ? 3 : t == "5" ? 4
+            : t == "6" ? 5 : t == "7" ? 6 : t == "8" ? 7 : t == "9" ? 8 : -1
+    }
+
+    // Global shortcuts, captured before keys reach the focused client window.
+    shortcuts := FocusScope {
+        capture-key-pressed(e) => {
+            // Alt+Tab / Alt+Shift+Tab: cycle the active task's windows.
+            if (e.modifiers.alt && e.text == Key.Tab) {
+                Logic.cycle-window(!e.modifiers.shift);
+                return accept;
+            }
+            if (e.modifiers.meta) {
+                if (e.text == Key.Return) { Logic.open-terminal(); return accept; }
+                if (e.text == "l") { Logic.lock(); return accept; }
+                if (e.text == "w") { Logic.close-active-window(); return accept; }
+                if (e.text == "n") { wizard.reset(); root.wizard-open = true; return accept; }
+                if (root.digit-index(e.text) >= 0) {
+                    Logic.switch-task-index(root.digit-index(e.text));
+                    return accept;
+                }
+            }
+            reject
+        }
 
     HorizontalLayout {
         Sidebar {
@@ -202,6 +229,7 @@ export component Desktop inherits Window {
                 x: p.x; y: p.y; width: p.width; height: p.height;
             }
         }
+    }
     }
 
     // Creation wizard overlay.

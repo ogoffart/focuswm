@@ -108,6 +108,10 @@ export global Logic {
     callback dismiss-notification(int /* id */);
     // Activate a system-tray item (left click).
     callback tray-activate(string /* id */);
+    // Global keyboard shortcuts.
+    callback cycle-window(bool /* forward */);
+    callback switch-task-index(int /* index */);
+    callback close-active-window();
     // Report navigation (changes the selected day; the week follows).
     callback report-prev-day();
     callback report-next-day();
