@@ -19,11 +19,31 @@ pub fn terminal_command() -> Vec<String> {
     if let Ok(t) = std::env::var("FOCUSWM_TERMINAL") {
         return split_command(&t);
     }
-    for cand in ["alacritty", "foot", "kitty", "wezterm"] {
+    // Wayland-native first, then common X11 terminals (run via XWayland), then
+    // the Debian `x-terminal-emulator` alternative. Only pick one that's
+    // actually on PATH so we don't try to launch a terminal that isn't there.
+    const CANDIDATES: &[&str] = &[
+        "alacritty",
+        "foot",
+        "kitty",
+        "wezterm",
+        "gnome-terminal",
+        "konsole",
+        "xfce4-terminal",
+        "tilix",
+        "st",
+        "urxvt",
+        "rxvt",
+        "x-terminal-emulator",
+        "xterm",
+    ];
+    for cand in CANDIDATES {
         if which(cand) {
             return vec![cand.to_string()];
         }
     }
+    // Nothing is installed; fall back to xterm so the failure names a real
+    // terminal (the caller surfaces the launch error as a toast).
     vec!["xterm".to_string()]
 }
 
