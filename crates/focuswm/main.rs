@@ -45,6 +45,11 @@ struct ToastState {
 /// title-bar height in `main.slint`'s `WindowView`.
 const TITLE_BAR_H: f32 = 30.0;
 
+/// Width of the sidebar, in logical px. The client content area is everything to
+/// its right, so the compositor output is sized to `window_width - SIDEBAR_W`.
+/// Must match `sidebar-width` in `theme.slint`.
+const SIDEBAR_W: i32 = 252;
+
 /// Smallest a floating window frame may be shrunk to, in logical px.
 const MIN_WIN_W: f32 = 200.0;
 const MIN_WIN_H: f32 = 120.0;
@@ -212,9 +217,10 @@ fn main() -> anyhow::Result<()> {
     // Shared state and models.
     let tasks = Rc::new(RefCell::new(persist::load()));
     let shared = Rc::new(RefCell::new(Shared::default()));
-    // Seed the content size (output minus the 240px sidebar) so the first window
+    // Seed the content size (output minus the sidebar) so the first window
     // placed before the host reports its size still lands somewhere sensible.
-    shared.borrow_mut().content = ((focuswm_wayland::OUTPUT_W - 240) as f32, focuswm_wayland::OUTPUT_H as f32);
+    shared.borrow_mut().content =
+        ((focuswm_wayland::OUTPUT_W - SIDEBAR_W) as f32, focuswm_wayland::OUTPUT_H as f32);
     let bridge = Rc::new(RefCell::new(GlBridge::default()));
     let spawn_env = Rc::new(RefCell::new(SpawnEnv::default()));
     // Holds focuswm's private D-Bus daemon (started once the compositor is
@@ -2182,8 +2188,8 @@ fn sync_output_size(
     let scale = ui.window().scale_factor().max(1.0);
     let logical_w = (size.width as f32 / scale) as i32;
     let logical_h = (size.height as f32 / scale) as i32;
-    // Content area excludes only the sidebar (240px); there is no top panel.
-    let content_w = (logical_w - 240).max(1);
+    // Content area excludes only the sidebar; there is no top panel.
+    let content_w = (logical_w - SIDEBAR_W).max(1);
     let content_h = logical_h.max(1);
     let changed = LAST.with(|l| {
         let mut l = l.borrow_mut();

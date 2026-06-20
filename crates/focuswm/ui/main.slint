@@ -251,6 +251,10 @@ component WindowView inherits Rectangle {
                         Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, true);
                         return accept;
                     }
+                    // Swallow unhandled Super/Meta chords (bound ones are consumed
+                    // earlier by the desktop's `shortcuts`) so they don't leak into
+                    // the client as typed text via the input below.
+                    if (e.modifiers.meta) { return accept; }
                     return reject;
                 }
                 capture-key-released(e) => {
@@ -258,6 +262,7 @@ component WindowView inherits Rectangle {
                         Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, false);
                         return accept;
                     }
+                    if (e.modifiers.meta) { return accept; }
                     return reject;
                 }
 
