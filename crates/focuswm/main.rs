@@ -86,6 +86,22 @@ fn main() -> anyhow::Result<()> {
         std::process::abort();
     }));
 
+    // `zbus` is compiled with its `tokio` feature: the `system-tray` crate pulls
+    // it in, and Cargo unifies features across the build, so *every* zbus user is
+    // now tokio-flavoured — including Slint's winit backend, which reaches the
+    // desktop portal over zbus to detect the colour scheme when it opens an X11
+    // window. That call runs on this (main) thread, where zbus expects an ambient
+    // Tokio runtime; without one it panics with "there is no reactor running".
+    // Enter a multi-threaded runtime for the whole UI lifetime so those zbus
+    // calls find a live reactor (its I/O driver runs on the runtime's own
+    // threads, so it keeps working while Slint owns the main thread).
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("focuswm-zbus")
+        .enable_all()
+        .build()?;
+    let _runtime_guard = runtime.enter();
+
     // Spawn the Wayland engine on its own thread.
     let (tx, rx) = channel::<Event>();
     let (cmd_tx, cmd_rx) = focuswm_wayland::command_channel();
