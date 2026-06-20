@@ -62,7 +62,7 @@ struct WinMeta {
 }
 
 /// A floating window's frame rectangle, in content-area logical px.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
 struct WinGeom {
     x: f32,
     y: f32,
@@ -96,6 +96,35 @@ fn default_geom(id: u64, cw: f32, ch: f32) -> WinGeom {
     let mut geom = WinGeom { x: 20.0 + off, y: 16.0 + off, w, h };
     geom.clamp_pos(cw, ch);
     geom
+}
+
+/// The frame a window should snap to when its title bar is released with the
+/// cursor at `(px, py)` in content-area logical px, or `None` outside any zone:
+/// top edge → maximize, left/right edge → half, the four corners → quarters.
+fn snap_geom(px: f32, py: f32, cw: f32, ch: f32) -> Option<WinGeom> {
+    if cw <= 0.0 || ch <= 0.0 {
+        return None;
+    }
+    let edge = 40.0_f32.min(cw * 0.25).min(ch * 0.25);
+    let (hw, hh) = (cw / 2.0, ch / 2.0);
+    let near_top = py <= edge;
+    let near_bottom = py >= ch - edge;
+    let near_left = px <= edge;
+    let near_right = px >= cw - edge;
+    // A corner counts when near a vertical edge and within the outer fifth.
+    let on_left = px <= cw * 0.2;
+    let on_right = px >= cw * 0.8;
+    let g = |x: f32, y: f32, w: f32, h: f32| Some(WinGeom { x, y, w, h });
+    match () {
+        _ if near_top && on_left => g(0.0, 0.0, hw, hh),
+        _ if near_top && on_right => g(hw, 0.0, hw, hh),
+        _ if near_bottom && on_left => g(0.0, hh, hw, hh),
+        _ if near_bottom && on_right => g(hw, hh, hw, hh),
+        _ if near_top => g(0.0, 0.0, cw, ch),
+        _ if near_left => g(0.0, 0.0, hw, ch),
+        _ if near_right => g(hw, 0.0, hw, ch),
+        _ => None,
+    }
 }
 
 /// UI-thread state shared between the event pump and the rendering notifier.
@@ -1030,6 +1059,66 @@ fn main() -> anyhow::Result<()> {
                     windows_model.set_row_data(row, t);
                 }
             }
+        }
+    });
+
+    // Live snap preview: while dragging a title bar, highlight the region the
+    // window would snap to (or hide the hint when outside any zone).
+    ui.global::<Logic>().on_preview_snap({
+        let shared = shared.clone();
+        let weak = weak.clone();
+        move |px, py| {
+            let (cw, ch) = shared.borrow().content;
+            let Some(ui) = weak.upgrade() else { return };
+            let data = ui.global::<AppData>();
+            match snap_geom(px, py, cw, ch) {
+                Some(g) => {
+                    data.set_snap_preview_x(g.x);
+                    data.set_snap_preview_y(g.y);
+                    data.set_snap_preview_w(g.w);
+                    data.set_snap_preview_h(g.h);
+                    data.set_snap_preview_visible(true);
+                }
+                None => data.set_snap_preview_visible(false),
+            }
+        }
+    });
+
+    // Title-bar drag released: snap to the zone under the cursor (if any), then
+    // raise/focus the window. Clears the preview either way.
+    ui.global::<Logic>().on_snap_window({
+        let shared = shared.clone();
+        let cmd_tx = cmd_tx.clone();
+        let focused = focused.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let mark_active = mark_active.clone();
+        let weak = weak.clone();
+        move |id, px, py| {
+            mark_active();
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<AppData>().set_snap_preview_visible(false);
+            }
+            let id = id as u64;
+            let resize = {
+                let mut s = shared.borrow_mut();
+                let (cw, ch) = s.content;
+                match snap_geom(px, py, cw, ch) {
+                    Some(g) => {
+                        let decorated = s.meta.get(&id).map(|m| m.decorated).unwrap_or(true);
+                        if let Some(m) = s.meta.get_mut(&id) {
+                            m.geom = g;
+                        }
+                        Some(g.content_size(decorated))
+                    }
+                    None => None,
+                }
+            };
+            if let Some((w, h)) = resize {
+                let _ = cmd_tx.send(Command::ResizeWindow { id: WindowId(id), width: w, height: h });
+            }
+            *focused.borrow_mut() = Some(WindowId(id));
+            let _ = cmd_tx.send(Command::FocusWindow(WindowId(id)));
+            rebuild_windows();
         }
     });
 
@@ -2074,6 +2163,23 @@ fn evdev_keycode(text: &str) -> Option<(u32, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snap_zones_map_to_expected_frames() {
+        let (cw, ch) = (1000.0_f32, 800.0_f32);
+        // Top-centre maximizes.
+        assert_eq!(snap_geom(500.0, 5.0, cw, ch), Some(WinGeom { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 }));
+        // Corners become quarters.
+        assert_eq!(snap_geom(5.0, 5.0, cw, ch), Some(WinGeom { x: 0.0, y: 0.0, w: 500.0, h: 400.0 }));
+        assert_eq!(snap_geom(995.0, 5.0, cw, ch), Some(WinGeom { x: 500.0, y: 0.0, w: 500.0, h: 400.0 }));
+        assert_eq!(snap_geom(5.0, 795.0, cw, ch), Some(WinGeom { x: 0.0, y: 400.0, w: 500.0, h: 400.0 }));
+        assert_eq!(snap_geom(995.0, 795.0, cw, ch), Some(WinGeom { x: 500.0, y: 400.0, w: 500.0, h: 400.0 }));
+        // Side edges become halves.
+        assert_eq!(snap_geom(5.0, 400.0, cw, ch), Some(WinGeom { x: 0.0, y: 0.0, w: 500.0, h: 800.0 }));
+        assert_eq!(snap_geom(995.0, 400.0, cw, ch), Some(WinGeom { x: 500.0, y: 0.0, w: 500.0, h: 800.0 }));
+        // The middle is no zone.
+        assert_eq!(snap_geom(500.0, 400.0, cw, ch), None);
+    }
 
     #[test]
     fn evdev_letters_and_shift() {

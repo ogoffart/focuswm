@@ -234,9 +234,9 @@ fn browser_isolation(program: &str, args: &[String]) -> Vec<String> {
 /// `~/snap/firefox/common` instead. Returns `None` if no home/data dir is
 /// available or the directory can't be created.
 fn firefox_profile_dir(sub: &str) -> Option<String> {
-    let snap_common = dirs::home_dir().map(|h| h.join("snap/firefox/common"));
-    let dir = match snap_common {
-        Some(base) if base.is_dir() => base.join(".mozilla/firefox/focuswm"),
+    let snap_root = dirs::home_dir().map(|h| h.join("snap/firefox"));
+    let dir = match snap_root {
+        Some(root) if root.is_dir() => root.join("common/.mozilla/firefox/focuswm"),
         _ => dirs::data_dir()?.join("focuswm/browser-profiles").join(sub),
     };
     std::fs::create_dir_all(&dir).ok()?;

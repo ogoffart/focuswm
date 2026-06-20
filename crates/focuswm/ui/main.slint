@@ -94,13 +94,18 @@ component WindowView inherits Rectangle {
             // Drag anywhere on the bar (the close button, declared on top,
             // takes its own area) to move the floating window. The delta is the
             // cursor's offset from the press; the host applies it incrementally.
-            TouchArea {
+            bar-ta := TouchArea {
                 mouse-cursor: move;
                 moved => {
                     Logic.move-window(tile.id, self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                    // Cursor position in content-area coordinates (the frame's
+                    // top-left plus the cursor offset within the title bar).
+                    Logic.preview-snap(tile.x + self.mouse-x, tile.y + self.mouse-y);
                 }
                 pointer-event(e) => {
-                    if (e.kind == PointerEventKind.up) { Logic.focus-window(tile.id); }
+                    if (e.kind == PointerEventKind.up) {
+                        Logic.snap-window(tile.id, tile.x + bar-ta.mouse-x, tile.y + bar-ta.mouse-y);
+                    }
                 }
             }
             HorizontalLayout {
@@ -160,18 +165,26 @@ component WindowView inherits Rectangle {
                             AppData.moving-window = -1;
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), true);
                         } else if e.kind == PointerEventKind.up {
-                            AppData.moving-window = -1;
-                            Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
-                            // Raise this window above the others it may overlap.
-                            // (After forwarding the release, so the model reorder
-                            // can't change tile.id mid-handler.)
-                            Logic.focus-window(tile.id);
+                            // Was this a client-side-decoration move drag? If so,
+                            // snap into the zone under the cursor; otherwise just
+                            // forward the release and raise the window.
+                            if (AppData.moving-window == tile.id) {
+                                AppData.moving-window = -1;
+                                Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
+                                Logic.snap-window(tile.id, tile.x + ta.mouse-x, tile.y + ta.mouse-y);
+                            } else {
+                                AppData.moving-window = -1;
+                                Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
+                                // Raise this window above the others it may overlap.
+                                Logic.focus-window(tile.id);
+                            }
                         } else if e.kind == PointerEventKind.move {
                             // A client-side-decorated window asked to be moved
                             // (the user is dragging its own title bar): drive the
                             // floating move instead of forwarding the drag.
                             if (AppData.moving-window == tile.id && ta.pressed) {
                                 Logic.move-window(tile.id, ta.mouse-x - ta.pressed-x, ta.mouse-y - ta.pressed-y);
+                                Logic.preview-snap(tile.x + ta.mouse-x, tile.y + ta.mouse-y);
                             } else {
                                 Logic.pointer-moved(tile.id, ta.mouse-x, ta.mouse-y);
                             }
@@ -288,6 +301,18 @@ export component Desktop inherits Window {
                 y: tile.y;
                 width: tile.width;
                 height: tile.height;
+            }
+
+            // Snap-zone preview, shown while dragging a title bar near an edge.
+            if AppData.snap-preview-visible: Rectangle {
+                x: AppData.snap-preview-x;
+                y: AppData.snap-preview-y;
+                width: AppData.snap-preview-w;
+                height: AppData.snap-preview-h;
+                background: Theme.accent.transparentize(0.78);
+                border-color: Theme.accent;
+                border-width: 2px;
+                border-radius: Theme.radius;
             }
 
             // wlr-layer-shell surfaces (panels, notifications, launchers) above

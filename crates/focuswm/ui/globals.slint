@@ -65,6 +65,13 @@ export global AppData {
     // title bar → xdg_toplevel.move); the view drives the drag while set, and
     // resets it to -1 on button release. -1 = none.
     in-out property <int> moving-window: -1;
+    // Snap-zone preview shown while dragging a title bar near a screen edge or
+    // corner: the rectangle (content-area px) the window would snap to.
+    in property <bool> snap-preview-visible: false;
+    in property <length> snap-preview-x;
+    in property <length> snap-preview-y;
+    in property <length> snap-preview-w;
+    in property <length> snap-preview-h;
     // Client popups (menus, dropdowns) for the active task's windows.
     in property <[PopupTile]> popups;
     // wlr-layer-shell surfaces (panels, wallpaper, overlays).
@@ -136,6 +143,10 @@ export global Logic {
     // Resize the floating window frame by a delta. `edges` is a bitmask of which
     // edges are being dragged: 1=left, 2=right, 4=top, 8=bottom.
     callback resize-window(int /* id */, int /* edges */, length /* dx */, length /* dy */);
+    // While dragging a title bar, preview the snap zone under the cursor
+    // (content-area px); on release, snap the window into that zone if any.
+    callback preview-snap(length /* px */, length /* py */);
+    callback snap-window(int /* id */, length /* px */, length /* py */);
     // Toggle a window's minimized / maximized state.
     callback minimize-window(int /* id */);
     callback maximize-window(int /* id */);
