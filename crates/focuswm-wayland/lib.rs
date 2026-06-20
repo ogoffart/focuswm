@@ -225,6 +225,11 @@ pub enum Command {
     PointerAxis { id: WindowId, dx: f64, dy: f64 },
     /// A key (evdev keycode) pressed/released for the focused window.
     Key { keycode: u32, pressed: bool },
+    /// Type already-composed Unicode text into the focused window. Used for
+    /// printable input (letters, digits, symbols, accents, AltGr layers,
+    /// dead-key results) so it is independent of the compositor's keymap and of
+    /// the host keyboard layout.
+    TypeText(String),
     /// Resize a window to the given size (sends an xdg configure).
     ResizeWindow {
         id: WindowId,
@@ -351,6 +356,7 @@ pub fn run(
         start_time: std::time::Instant::now(),
         pending_callbacks: Vec::new(),
         events: events.clone(),
+        text_input: Default::default(),
     };
 
     if state.dmabuf_enabled {

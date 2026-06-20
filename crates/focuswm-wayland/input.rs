@@ -1,15 +1,172 @@
 //! Forwarding of input (from the Slint UI thread) to the focused Wayland client
 //! via the seat, plus window-management commands.
 
+use std::collections::HashMap;
+
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::input::keyboard::{FilterResult, Keycode};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::SERIAL_COUNTER;
+use xkbcommon::xkb;
 
 use focuswm_shell::WindowId;
 
 use crate::state::FocusState;
 use crate::{Command, Event};
+
+/// Compiles a fresh keymap so the focused client can receive arbitrary composed
+/// Unicode characters — accents, AltGr layers, dead-key results — independent of
+/// the host keyboard layout. The host (the UI toolkit) already does the layout +
+/// composition work and hands us the final text; we just need to deliver that
+/// exact character to the client.
+///
+/// Approach (à la `wtype`): take the base US keymap and append one keycode
+/// "slot" per distinct character we are asked to type, mapping that slot to the
+/// character's Unicode keysym. The keymap is only rebuilt and re-uploaded when a
+/// *new* character first appears, so steady-state typing reuses a stable keymap.
+#[derive(Default)]
+pub struct TextInput {
+    /// Base keymap (xkb text format) we append Unicode slots to; empty until the
+    /// first character is typed (or if compiling the base layout failed).
+    base: String,
+    /// First xkb keycode used for a slot (just past the base keymap's maximum).
+    slot_base: u32,
+    /// Distinct characters seen so far; the index is the slot offset.
+    chars: Vec<char>,
+    /// Already-assigned `char -> xkb keycode`.
+    by_char: HashMap<char, u32>,
+    /// Set when `chars` grew and the keymap needs re-uploading.
+    dirty: bool,
+}
+
+/// Maximum number of distinct characters we'll assign slots for (keeps keycode
+/// names within xkb's 4-character limit: `Z000`..`ZFFF`).
+const MAX_SLOTS: usize = 0xFFF;
+
+impl TextInput {
+    /// The xkb keycode that types `c`, assigning a new slot if needed. Returns
+    /// `None` only if the base keymap can't be compiled or we're out of slots.
+    fn keycode_for(&mut self, c: char) -> Option<u32> {
+        if let Some(&kc) = self.by_char.get(&c) {
+            return Some(kc);
+        }
+        if self.base.is_empty() {
+            let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+            // Empty names == the system default layout, matching the seat's
+            // `XkbConfig::default()`, so base keys (Enter, Ctrl+C, …) behave the
+            // same once this keymap takes over.
+            let keymap = xkb::Keymap::new_from_names(
+                &ctx, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS,
+            )?;
+            self.base = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+            self.slot_base = parse_maximum(&self.base).unwrap_or(255) + 12;
+        }
+        if self.chars.len() >= MAX_SLOTS {
+            return None;
+        }
+        let kc = self.slot_base + self.chars.len() as u32;
+        self.chars.push(c);
+        self.by_char.insert(c, kc);
+        self.dirty = true;
+        Some(kc)
+    }
+
+    /// If a new character was just assigned, the keymap to upload before typing.
+    fn take_keymap(&mut self) -> Option<String> {
+        if std::mem::take(&mut self.dirty) {
+            Some(build_keymap(&self.base, &self.chars, self.slot_base))
+        } else {
+            None
+        }
+    }
+}
+
+/// Byte range of the numeric value in `maximum = N`, plus the parsed value.
+/// Tolerant of whitespace around `=` (xkbcommon's exact formatting may vary).
+fn maximum_span(keymap: &str) -> Option<(std::ops::Range<usize>, u32)> {
+    let kw = keymap.find("maximum")? + "maximum".len();
+    let bytes = keymap.as_bytes();
+    let mut i = kw;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'=') {
+        i += 1;
+    }
+    let start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    let value: u32 = keymap[start..i].parse().ok()?;
+    Some((start..i, value))
+}
+
+/// Parse the `maximum` keycode value from a compiled keymap.
+fn parse_maximum(keymap: &str) -> Option<u32> {
+    maximum_span(keymap).map(|(_, v)| v)
+}
+
+/// Append Unicode keycode slots to a base keymap: declare each slot in the
+/// keycodes section (raising `maximum`) and map it to its Unicode keysym in the
+/// symbols section. Indentation is irrelevant to the xkb parser, so the inserts
+/// are plain lines.
+fn build_keymap(base: &str, chars: &[char], slot_base: u32) -> String {
+    if chars.is_empty() {
+        return base.to_string();
+    }
+    let new_max = slot_base + chars.len() as u32 + 1;
+
+    // Raise `maximum` to cover the slots by replacing just its number.
+    let mut out = base.to_string();
+    let keycodes_at = if let Some((span, _)) = maximum_span(&out) {
+        out.replace_range(span.clone(), &new_max.to_string());
+        // Insert keycode declarations after the end of the maximum line.
+        let line_end = out[span.start..]
+            .find('\n')
+            .map(|n| span.start + n + 1)
+            .unwrap_or(span.start);
+        Some(line_end)
+    } else {
+        None
+    };
+
+    // Keycode declarations, inserted inside the keycodes block.
+    if let Some(at) = keycodes_at {
+        let mut keycodes = String::new();
+        for i in 0..chars.len() {
+            keycodes.push_str(&format!("\t<Z{:03X}> = {};\n", i, slot_base + i as u32));
+        }
+        out.insert_str(at, &keycodes);
+    }
+
+    // Symbol mappings, inserted just before the close of the xkb_symbols block.
+    let mut symbols = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        symbols.push_str(&format!("\tkey <Z{:03X}> {{ [ U{:04X} ] }};\n", i, *c as u32));
+    }
+    if let Some(close) = symbols_block_close(&out) {
+        out.insert_str(close, &symbols);
+    }
+    out
+}
+
+/// Byte index of the `}` that closes the `xkb_symbols` block, found by matching
+/// braces from the block's opening `{` (its body contains nested `key { … }`).
+fn symbols_block_close(keymap: &str) -> Option<usize> {
+    let block = keymap.find("xkb_symbols")?;
+    let open = block + keymap[block..].find('{')?;
+    let mut depth = 0usize;
+    for (i, b) in keymap[open..].bytes().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
 
 impl FocusState {
     /// Apply a command coming from the UI thread.
@@ -32,6 +189,7 @@ impl FocusState {
             Command::PointerLeave => self.pointer_leave(),
             Command::PointerAxis { id, dx, dy } => self.pointer_axis(id, dx, dy),
             Command::Key { keycode, pressed } => self.key_input(keycode, pressed),
+            Command::TypeText(text) => self.type_text(text),
             Command::ResizeWindow { id, width, height } => self.resize_window(id, width, height),
             Command::SetMaximized { id, maximized } => self.set_window_maximized(id, maximized),
             Command::ResizeOutput { width, height } => self.resize_output(width, height),
@@ -174,6 +332,40 @@ impl FocusState {
         );
     }
 
+    /// Type already-composed Unicode `text` into the focused client: ensure each
+    /// character has a keycode slot (re-uploading the keymap when a new one is
+    /// introduced), then tap that keycode. This bypasses the host layout
+    /// entirely, so accents / AltGr / dead-key results arrive verbatim.
+    fn type_text(&mut self, text: String) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        for c in text.chars() {
+            let Some(keycode) = self.text_input.keycode_for(c) else {
+                continue;
+            };
+            // A newly seen character needs the extended keymap uploaded first;
+            // Wayland delivers it before the key events that follow.
+            if let Some(keymap) = self.text_input.take_keymap() {
+                if keyboard.set_keymap_from_string(self, keymap).is_err() {
+                    continue;
+                }
+            }
+            for state in [KeyState::Pressed, KeyState::Released] {
+                let serial = SERIAL_COUNTER.next_serial();
+                let time = self.millis_since_start();
+                keyboard.input::<(), _>(
+                    self,
+                    Keycode::new(keycode),
+                    state,
+                    serial,
+                    time,
+                    |_, _, _| FilterResult::Forward,
+                );
+            }
+        }
+    }
+
     fn resize_window(&mut self, id: WindowId, width: i32, height: i32) {
         if let Some(entry) = self.windows.values().find(|e| e.id == id) {
             entry.toplevel.with_pending_state(|state| {
@@ -251,5 +443,67 @@ impl FocusState {
             width: size.0,
             height: size.1,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A trimmed keymap shaped like xkbcommon's text output, enough to exercise
+    /// the keycodes/symbols splicing.
+    const BASE: &str = "xkb_keymap {\n\
+        xkb_keycodes \"(unnamed)\" {\n\
+        \tminimum = 8;\n\
+        \tmaximum = 708;\n\
+        \t<ESC> = 9;\n\
+        };\n\
+        xkb_types \"(unnamed)\" {\n\
+        };\n\
+        xkb_compat \"(unnamed)\" {\n\
+        };\n\
+        xkb_symbols \"(unnamed)\" {\n\
+        \tkey <ESC> { [ Escape ] };\n\
+        };\n\
+        };\n";
+
+    #[test]
+    fn maximum_parsed_tolerating_spacing() {
+        assert_eq!(parse_maximum(BASE), Some(708));
+        assert_eq!(parse_maximum("\tmaximum=42;\n"), Some(42));
+        assert_eq!(parse_maximum("  maximum   =   7 ;"), Some(7));
+        assert_eq!(parse_maximum("no maximum here"), None);
+    }
+
+    #[test]
+    fn symbols_block_close_skips_nested_braces() {
+        let close = symbols_block_close(BASE).expect("symbols block close");
+        // The brace it finds must close xkb_symbols: everything after is just the
+        // outer keymap close.
+        assert_eq!(BASE[close..].trim_start_matches('}').trim(), "};");
+        // And the inner `key { … }` braces must not have tripped it up.
+        assert!(BASE[..close].contains("key <ESC>"));
+    }
+
+    #[test]
+    fn build_keymap_appends_valid_looking_slots() {
+        let km = build_keymap(BASE, &['a', 'é'], 720);
+        // Maximum was raised to cover the two slots (720, 721).
+        assert_eq!(parse_maximum(&km), Some(722));
+        // Slot keycodes declared in the keycodes block (before xkb_types).
+        let kc_a = km.find("<Z000> = 720;").expect("slot a keycode");
+        let kc_e = km.find("<Z001> = 721;").expect("slot é keycode");
+        assert!(kc_a < km.find("xkb_types").unwrap());
+        assert!(kc_e < km.find("xkb_types").unwrap());
+        // Symbols map the slots to the right Unicode keysyms, inside xkb_symbols.
+        let sym_a = km.find("key <Z000> { [ U0061 ] };").expect("slot a symbol");
+        let sym_e = km.find("key <Z001> { [ U00E9 ] };").expect("slot é symbol");
+        let sym_block = km.find("xkb_symbols").unwrap();
+        assert!(sym_a > sym_block && sym_e > sym_block);
+    }
+
+    #[test]
+    fn build_keymap_noop_without_chars() {
+        assert_eq!(build_keymap(BASE, &[], 720), BASE);
     }
 }

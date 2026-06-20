@@ -1855,8 +1855,17 @@ fn evdev_button(btn: i32) -> u32 {
     }
 }
 
-/// Forward a key tap to the focused client: press any modifiers, tap the key,
-/// then release the modifiers.
+/// Forward a key press to the focused client. Three paths:
+///
+/// 1. Layout-independent special/navigation keys (Enter, Tab, Backspace, arrows,
+///    F-keys, …) → a keycode tap on the compositor's base layout.
+/// 2. Ctrl[+Alt] shortcuts (Ctrl+C, Ctrl+Shift+V, …) → the base key resolved on
+///    the US layout, tapped with the held modifiers.
+/// 3. Everything else is text the host already composed — letters, digits,
+///    symbols, accents, AltGr layers, dead-key results — so type the Unicode
+///    verbatim. This is what makes non-US layouts (e.g. AZERTY) work: the host
+///    did the layout/composition, and we deliver the exact character rather than
+///    trying to re-derive a US keycode for it.
 fn forward_key(
     cmd_tx: &focuswm_wayland::CommandSender<Command>,
     text: &str,
@@ -1864,9 +1873,44 @@ fn forward_key(
     alt: bool,
     shift: bool,
 ) {
-    let Some((keycode, needs_shift)) = evdev_keycode(text) else {
+    if let Some(keycode) = special_keycode(text) {
+        send_key_tap(cmd_tx, keycode, false, ctrl, alt, shift);
         return;
-    };
+    }
+    if ctrl {
+        if let Some((keycode, needs_shift)) = evdev_keycode(text) {
+            send_key_tap(cmd_tx, keycode, needs_shift, ctrl, alt, shift);
+        }
+        return;
+    }
+    let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+    if !typed.is_empty() {
+        let _ = cmd_tx.send(Command::TypeText(typed));
+    }
+}
+
+/// The keycode for a layout-independent special/navigation key (control codes
+/// and Slint's private-use key encodings, plus space), or `None` for printable
+/// text that should be typed as Unicode instead.
+fn special_keycode(text: &str) -> Option<u32> {
+    let ch = text.chars().next()?;
+    let is_special =
+        ch == ' ' || ch.is_control() || ('\u{F700}'..='\u{F8FF}').contains(&ch);
+    if !is_special {
+        return None;
+    }
+    evdev_keycode(text).map(|(keycode, _)| keycode)
+}
+
+/// Tap a key: press any held modifiers, press+release the key, release modifiers.
+fn send_key_tap(
+    cmd_tx: &focuswm_wayland::CommandSender<Command>,
+    keycode: u32,
+    needs_shift: bool,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+) {
     let want_shift = shift || needs_shift;
     let key = |kc: u32, pressed: bool| {
         let _ = cmd_tx.send(Command::Key {
@@ -2029,5 +2073,20 @@ mod tests {
         assert_eq!(evdev_button(1), 0x110);
         assert_eq!(evdev_button(2), 0x111);
         assert_eq!(evdev_button(3), 0x112);
+    }
+
+    #[test]
+    fn special_keys_route_to_keycodes_text_does_not() {
+        // Navigation / control keys keep the keycode path.
+        assert_eq!(special_keycode("\u{000a}"), Some(28)); // Return
+        assert_eq!(special_keycode("\u{0008}"), Some(14)); // Backspace
+        assert_eq!(special_keycode(" "), Some(57)); // Space
+        assert_eq!(special_keycode("\u{F700}"), Some(103)); // Up arrow
+        assert_eq!(special_keycode("\u{F704}"), Some(59)); // F1
+        // Printable text (incl. non-US / accented) is typed as Unicode instead.
+        assert_eq!(special_keycode("a"), None);
+        assert_eq!(special_keycode("~"), None);
+        assert_eq!(special_keycode("é"), None);
+        assert_eq!(special_keycode("1"), None);
     }
 }

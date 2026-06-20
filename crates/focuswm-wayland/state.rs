@@ -93,6 +93,10 @@ pub struct FocusState {
 
     /// Outbound channel notifying the UI thread of shell events.
     pub events: std::sync::mpsc::Sender<Event>,
+
+    /// Builds keymaps on the fly so the focused client can receive arbitrary
+    /// composed Unicode (accents, AltGr, dead keys) regardless of layout.
+    pub text_input: crate::input::TextInput,
 }
 
 /// A tracked layer-shell surface (panel, bar, wallpaper, notification).
