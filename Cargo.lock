@@ -1405,6 +1405,7 @@ dependencies = [
  "i-slint-backend-testing",
  "i-slint-core",
  "image",
+ "libc",
  "log",
  "serde",
  "serde_json",

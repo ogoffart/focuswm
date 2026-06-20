@@ -77,6 +77,13 @@ struct Shared {
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // A compositor juggles a lot of file descriptors (a socket per client, every
+    // dmabuf plane, XWayland, epoll/eventfds, …), so the default soft limit
+    // (often 1024) is easily exhausted — especially with fd-hungry clients like
+    // Firefox — which then crashes the event loop with "Too many open files".
+    // Raise the soft limit to the hard limit, as other compositors do.
+    raise_open_file_limit();
+
     // A panic on any thread brings the whole process down rather than leaving a
     // half-dead shell (e.g. a dead Wayland thread → "no windows show").
     let default_hook = std::panic::take_hook();
@@ -1376,6 +1383,31 @@ fn parse_hex_color(hex: &str) -> Option<slint::Color> {
         (rgb >> 8) as u8,
         rgb as u8,
     ))
+}
+
+/// Raise the open-file soft limit (`RLIMIT_NOFILE`) to the hard limit. Best
+/// effort: logs and carries on if the limits can't be read or set.
+fn raise_open_file_limit() {
+    // SAFETY: `getrlimit`/`setrlimit` only read/write the local `rlimit` struct.
+    unsafe {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            log::warn!("could not read RLIMIT_NOFILE: {}", std::io::Error::last_os_error());
+            return;
+        }
+        if lim.rlim_cur >= lim.rlim_max {
+            return;
+        }
+        lim.rlim_cur = lim.rlim_max;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) != 0 {
+            log::warn!("could not raise RLIMIT_NOFILE: {}", std::io::Error::last_os_error());
+        } else {
+            log::info!("raised open-file limit to {}", lim.rlim_max);
+        }
+    }
 }
 
 /// The current local calendar day, "YYYY-MM-DD".
