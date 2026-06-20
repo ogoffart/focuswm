@@ -156,15 +156,25 @@ component WindowView inherits Rectangle {
                     pointer-event(e) => {
                         fs.focus();
                         if e.kind == PointerEventKind.down {
+                            // Clear any stale move flag from a previous drag.
+                            AppData.moving-window = -1;
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), true);
                         } else if e.kind == PointerEventKind.up {
+                            AppData.moving-window = -1;
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
                             // Raise this window above the others it may overlap.
                             // (After forwarding the release, so the model reorder
                             // can't change tile.id mid-handler.)
                             Logic.focus-window(tile.id);
                         } else if e.kind == PointerEventKind.move {
-                            Logic.pointer-moved(tile.id, ta.mouse-x, ta.mouse-y);
+                            // A client-side-decorated window asked to be moved
+                            // (the user is dragging its own title bar): drive the
+                            // floating move instead of forwarding the drag.
+                            if (AppData.moving-window == tile.id && ta.pressed) {
+                                Logic.move-window(tile.id, ta.mouse-x - ta.pressed-x, ta.mouse-y - ta.pressed-y);
+                            } else {
+                                Logic.pointer-moved(tile.id, ta.mouse-x, ta.mouse-y);
+                            }
                         }
                     }
                 }

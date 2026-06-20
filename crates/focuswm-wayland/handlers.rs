@@ -417,10 +417,17 @@ impl XdgShellHandler for FocusState {
 
     fn move_request(
         &mut self,
-        _surface: ToplevelSurface,
+        surface: ToplevelSurface,
         _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
         _serial: smithay::utils::Serial,
     ) {
+        // Client-side-decorated clients (which draw their own title bar) request
+        // an interactive move when the user drags it. focuswm owns window
+        // positions on the UI side, so hand the request to the UI, which drives
+        // the move from the in-flight pointer drag.
+        if let Some(entry) = self.windows.get(surface.wl_surface()) {
+            let _ = self.events.send(Event::MoveRequested(entry.id));
+        }
     }
 
     fn resize_request(

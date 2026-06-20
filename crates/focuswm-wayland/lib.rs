@@ -47,6 +47,10 @@ pub enum Event {
     },
     WindowAdded(WindowId),
     WindowRemoved(WindowId),
+    /// A window asked to be moved interactively (the client dragged its own
+    /// client-side title bar → `xdg_toplevel.move`). The UI then drives the
+    /// floating move from the ongoing pointer drag.
+    MoveRequested(WindowId),
     /// The window's decoration mode changed (true = compositor draws SSD).
     WindowDecorated { id: WindowId, decorated: bool },
     /// A window committed a new frame: tightly-packed RGBA8 of `width`x`height`,
@@ -132,6 +136,7 @@ impl std::fmt::Debug for Event {
                 .finish(),
             Event::WindowAdded(id) => f.debug_tuple("WindowAdded").field(id).finish(),
             Event::WindowRemoved(id) => f.debug_tuple("WindowRemoved").field(id).finish(),
+            Event::MoveRequested(id) => f.debug_tuple("MoveRequested").field(id).finish(),
             Event::WindowDecorated { id, decorated } => f
                 .debug_struct("WindowDecorated")
                 .field("id", id)

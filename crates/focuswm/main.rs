@@ -1157,6 +1157,14 @@ fn main() -> anyhow::Result<()> {
                         let _ = cmd_tx.send(Command::FocusWindow(id));
                         dirty_windows = true;
                     }
+                    Event::MoveRequested(id) => {
+                        // The client dragged its own (client-side) title bar.
+                        // Flag the window so the view drives the floating move
+                        // from the in-flight pointer drag.
+                        if let Some(ui) = weak.upgrade() {
+                            ui.global::<AppData>().set_moving_window(id.0 as i32);
+                        }
+                    }
                     Event::WindowRemoved(id) => {
                         tasks.borrow_mut().remove_window(id);
                         let mut s = shared.borrow_mut();
