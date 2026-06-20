@@ -473,12 +473,15 @@ impl XdgShellHandler for FocusState {
 
 impl XdgDecorationHandler for FocusState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        // Default to server-side decorations; CSD clients follow up to opt out.
         self.set_decoration_mode(&toplevel, DecorationMode::ServerSide);
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        self.set_decoration_mode(&toplevel, mode);
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
+        // focuswm draws the title bar itself — and that bar is the drag handle
+        // for moving floating windows — so always use server-side decorations,
+        // even when a client (e.g. weston-terminal) asks for client-side ones.
+        // Otherwise the client draws its own title bar, which can't be dragged.
+        self.set_decoration_mode(&toplevel, DecorationMode::ServerSide);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
