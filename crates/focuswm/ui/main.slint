@@ -58,9 +58,29 @@ component ClientSurface inherits Rectangle {
     }
 }
 
+// A thin invisible grip along one or more window edges that resizes the frame.
+// `edges` is a bitmask (1=left, 2=right, 4=top, 8=bottom) passed straight to the
+// host, which applies the drag delta to the matching sides. The delta is the
+// pointer's offset from where the press started; because the host adds it to the
+// stored geometry, the grip self-corrects back under the cursor on the next move.
+component ResizeHandle inherits TouchArea {
+    in property <int> id;
+    in property <int> edges;
+    mouse-cursor: (edges == 1 || edges == 2) ? MouseCursor.ew-resize
+        : (edges == 4 || edges == 8) ? MouseCursor.ns-resize
+        : (edges == 5 || edges == 10) ? MouseCursor.nwse-resize
+        : MouseCursor.nesw-resize;
+    moved => {
+        Logic.resize-window(id, edges, self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+    }
+    pointer-event(e) => {
+        if (e.kind == PointerEventKind.up) { Logic.focus-window(id); }
+    }
+}
+
 // Renders one client window as a GL texture, forwarding pointer + keyboard to
-// the Wayland client. Draws a server-side title bar when the window negotiated
-// server-side decorations.
+// the Wayland client. Draws a server-side title bar (draggable to move) when the
+// window negotiated server-side decorations, plus resize grips on every edge.
 component WindowView inherits Rectangle {
     in property <WindowTile> tile;
 
@@ -71,6 +91,18 @@ component WindowView inherits Rectangle {
         if tile.decorated: Rectangle {
             height: 30px;
             background: Theme.sidebar-bg;
+            // Drag anywhere on the bar (the close button, declared on top,
+            // takes its own area) to move the floating window. The delta is the
+            // cursor's offset from the press; the host applies it incrementally.
+            TouchArea {
+                mouse-cursor: move;
+                moved => {
+                    Logic.move-window(tile.id, self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.up) { Logic.focus-window(tile.id); }
+                }
+            }
             HorizontalLayout {
                 padding-left: 10px;
                 padding-right: 4px;
@@ -127,6 +159,10 @@ component WindowView inherits Rectangle {
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), true);
                         } else if e.kind == PointerEventKind.up {
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
+                            // Raise this window above the others it may overlap.
+                            // (After forwarding the release, so the model reorder
+                            // can't change tile.id mid-handler.)
+                            Logic.focus-window(tile.id);
                         } else if e.kind == PointerEventKind.move {
                             Logic.pointer-moved(tile.id, ta.mouse-x, ta.mouse-y);
                         }
@@ -135,6 +171,17 @@ component WindowView inherits Rectangle {
             }
         }
     }
+
+    // Resize grips on the frame edges and corners (on top of the content). The
+    // corner masks combine two edges: 5=TL, 6=TR, 9=BL, 10=BR.
+    ResizeHandle { id: tile.id; edges: 1; x: 0; y: 12px; width: 6px; height: parent.height - 24px; }
+    ResizeHandle { id: tile.id; edges: 2; x: parent.width - 6px; y: 12px; width: 6px; height: parent.height - 24px; }
+    ResizeHandle { id: tile.id; edges: 4; x: 12px; y: 0; width: parent.width - 24px; height: 6px; }
+    ResizeHandle { id: tile.id; edges: 8; x: 12px; y: parent.height - 6px; width: parent.width - 24px; height: 6px; }
+    ResizeHandle { id: tile.id; edges: 5; x: 0; y: 0; width: 12px; height: 12px; }
+    ResizeHandle { id: tile.id; edges: 6; x: parent.width - 12px; y: 0; width: 12px; height: 12px; }
+    ResizeHandle { id: tile.id; edges: 9; x: 0; y: parent.height - 12px; width: 12px; height: 12px; }
+    ResizeHandle { id: tile.id; edges: 10; x: parent.width - 12px; y: parent.height - 12px; width: 12px; height: 12px; }
 
     pure function btn-code(b: PointerEventButton) -> int {
         b == PointerEventButton.left ? 1
@@ -220,12 +267,15 @@ export component Desktop inherits Window {
                 horizontal-alignment: center;
             }
 
-            // Client windows of the active task, stacked (last on top).
+            // Client windows of the active task as floating frames (last on
+            // top). Geometry is host-driven; drag the title bar to move and the
+            // edge grips to resize.
             for tile[i] in AppData.windows: WindowView {
                 tile: tile;
-                x: 0; y: 0;
-                width: 100%;
-                height: 100%;
+                x: tile.x;
+                y: tile.y;
+                width: tile.width;
+                height: tile.height;
             }
 
             // wlr-layer-shell surfaces (panels, notifications, launchers) above

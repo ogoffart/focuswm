@@ -122,6 +122,12 @@ export global Logic {
     // Window management / input forwarding.
     callback close-window(int /* id */);
     callback focus-window(int /* id */);
+    // Drag the floating window frame by a delta (title-bar drag). Applied
+    // incrementally: the host adds the delta to the window's stored position.
+    callback move-window(int /* id */, length /* dx */, length /* dy */);
+    // Resize the floating window frame by a delta. `edges` is a bitmask of which
+    // edges are being dragged: 1=left, 2=right, 4=top, 8=bottom.
+    callback resize-window(int /* id */, int /* edges */, length /* dx */, length /* dy */);
     callback pointer-moved(int /* id */, length /* x */, length /* y */);
     callback pointer-button(int /* id */, length /* x */, length /* y */, int /* btn */, bool /* pressed */);
     callback key-event(string /* text */, bool /* ctrl */, bool /* alt */, bool /* shift */, bool /* pressed */);

@@ -14,10 +14,14 @@ export struct TaskItem {
 }
 
 // One client window, rendered as a GL texture in the active task's view.
+// Floating: `x`/`y` are the window frame's top-left in the content area and
+// `width`/`height` are the whole frame size (title bar included when decorated).
 export struct WindowTile {
     id: int,
     title: string,
     texture: image,
+    x: length,
+    y: length,
     width: length,
     height: length,
     // Whether the compositor should draw a server-side title bar.

@@ -40,6 +40,14 @@ struct ToastState {
     deadline: Option<Instant>,
 }
 
+/// Height of the server-side decoration title bar, in logical px. Must match the
+/// title-bar height in `main.slint`'s `WindowView`.
+const TITLE_BAR_H: f32 = 30.0;
+
+/// Smallest a floating window frame may be shrunk to, in logical px.
+const MIN_WIN_W: f32 = 200.0;
+const MIN_WIN_H: f32 = 120.0;
+
 /// Last-known metadata for a client window.
 #[derive(Default, Clone)]
 struct WinMeta {
@@ -48,6 +56,46 @@ struct WinMeta {
     app_id: String,
     /// Whether the compositor should draw a server-side decoration title bar.
     decorated: bool,
+    /// Floating frame geometry in content-area logical px: top-left `(x, y)` and
+    /// whole-frame size `(w, h)` (the title bar is the top `TITLE_BAR_H` of it).
+    geom: WinGeom,
+}
+
+/// A floating window's frame rectangle, in content-area logical px.
+#[derive(Default, Clone, Copy)]
+struct WinGeom {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl WinGeom {
+    /// The client surface size below the title bar: the content the Wayland
+    /// client should render into, in logical px.
+    fn content_size(&self, decorated: bool) -> (i32, i32) {
+        let bar = if decorated { TITLE_BAR_H } else { 0.0 };
+        (self.w.round() as i32, (self.h - bar).round() as i32)
+    }
+
+    /// Clamp the top-left so the title bar stays grab-able within a `cw`×`ch`
+    /// content area (keep at least `KEEP` px of the frame on each axis on-screen).
+    fn clamp_pos(&mut self, cw: f32, ch: f32) {
+        const KEEP: f32 = 80.0;
+        self.x = self.x.clamp(KEEP - self.w, (cw - KEEP).max(0.0));
+        self.y = self.y.clamp(0.0, (ch - TITLE_BAR_H).max(0.0));
+    }
+}
+
+/// A default frame for a freshly mapped window: ~72% of the content area, nudged
+/// by a small per-window cascade so successive windows don't perfectly overlap.
+fn default_geom(id: u64, cw: f32, ch: f32) -> WinGeom {
+    let w = (cw * 0.72).clamp(MIN_WIN_W, (cw - 20.0).max(MIN_WIN_W));
+    let h = (ch * 0.72).clamp(MIN_WIN_H, (ch - 20.0).max(MIN_WIN_H));
+    let off = (id % 6) as f32 * 28.0;
+    let mut geom = WinGeom { x: 20.0 + off, y: 16.0 + off, w, h };
+    geom.clamp_pos(cw, ch);
+    geom
 }
 
 /// UI-thread state shared between the event pump and the rendering notifier.
@@ -72,6 +120,9 @@ struct Shared {
     layer_rows: HashMap<u64, usize>,
     /// A client is inhibiting idle (e.g. a video player); suppress the idle lock.
     idle_inhibited: bool,
+    /// Current content-area size (logical px), tracked from the host window so
+    /// new floating windows can be placed and positions clamped against it.
+    content: (f32, f32),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -128,6 +179,9 @@ fn main() -> anyhow::Result<()> {
     // Shared state and models.
     let tasks = Rc::new(RefCell::new(persist::load()));
     let shared = Rc::new(RefCell::new(Shared::default()));
+    // Seed the content size (output minus the 240px sidebar) so the first window
+    // placed before the host reports its size still lands somewhere sensible.
+    shared.borrow_mut().content = ((focuswm_wayland::OUTPUT_W - 240) as f32, focuswm_wayland::OUTPUT_H as f32);
     let bridge = Rc::new(RefCell::new(GlBridge::default()));
     let spawn_env = Rc::new(RefCell::new(SpawnEnv::default()));
     let start = Instant::now();
@@ -306,26 +360,34 @@ fn main() -> anyhow::Result<()> {
                     active_windows.push(w);
                 }
             }
+            let (cw, ch) = shared.content;
             let mut tiles = Vec::new();
             let mut rows = HashMap::new();
             for (row, wid) in active_windows.iter().enumerate() {
                 let id = wid.0;
-                let (title, decorated) = shared
+                let (title, decorated, mut geom) = shared
                     .meta
                     .get(&id)
-                    .map(|m| (m.title.clone(), m.decorated))
+                    .map(|m| (m.title.clone(), m.decorated, m.geom))
                     .unwrap_or_default();
-                let (w, h, texture) = shared
+                // Keep the title bar reachable if the content area shrank.
+                geom.clamp_pos(cw, ch);
+                if let Some(m) = shared.meta.get_mut(&id) {
+                    m.geom = geom;
+                }
+                let texture = shared
                     .tiles
                     .get(&id)
-                    .cloned()
-                    .unwrap_or((0.0, 0.0, slint::Image::default()));
+                    .map(|(_, _, img)| img.clone())
+                    .unwrap_or_default();
                 tiles.push(WindowTile {
                     id: id as i32,
                     title: title.into(),
                     texture,
-                    width: w,
-                    height: h,
+                    x: geom.x,
+                    y: geom.y,
+                    width: geom.w,
+                    height: geom.h,
                     decorated,
                 });
                 rows.insert(id, row);
@@ -853,6 +915,87 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Drag a floating window's title bar: add the delta to its frame position.
+    // Updating just this row (not a full rebuild) keeps the TouchArea's pointer
+    // grab — and so the live drag — intact.
+    ui.global::<Logic>().on_move_window({
+        let shared = shared.clone();
+        let windows_model = windows_model.clone();
+        let mark_active = mark_active.clone();
+        move |id, dx, dy| {
+            mark_active();
+            let id = id as u64;
+            let mut s = shared.borrow_mut();
+            let (cw, ch) = s.content;
+            let geom = {
+                let Some(meta) = s.meta.get_mut(&id) else { return };
+                meta.geom.x += dx;
+                meta.geom.y += dy;
+                meta.geom.clamp_pos(cw, ch);
+                meta.geom
+            };
+            if let Some(row) = s.rows.get(&id).copied() {
+                if let Some(mut t) = windows_model.row_data(row) {
+                    t.x = geom.x;
+                    t.y = geom.y;
+                    windows_model.set_row_data(row, t);
+                }
+            }
+        }
+    });
+
+    // Drag a resize grip: apply the delta to the dragged edges (bitmask
+    // 1=left 2=right 4=top 8=bottom), clamp to a minimum, and re-size the client.
+    ui.global::<Logic>().on_resize_window({
+        let shared = shared.clone();
+        let windows_model = windows_model.clone();
+        let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
+        move |id, edges, dx, dy| {
+            mark_active();
+            let id = id as u64;
+            let mut s = shared.borrow_mut();
+            let (g, decorated) = {
+                let Some(meta) = s.meta.get_mut(&id) else { return };
+                let mut g = meta.geom;
+                if edges & 2 != 0 {
+                    g.w = (g.w + dx).max(MIN_WIN_W);
+                }
+                if edges & 1 != 0 {
+                    // Left edge: move the origin but keep the right edge anchored.
+                    let new_w = (g.w - dx).max(MIN_WIN_W);
+                    g.x += g.w - new_w;
+                    g.w = new_w;
+                }
+                if edges & 8 != 0 {
+                    g.h = (g.h + dy).max(MIN_WIN_H);
+                }
+                if edges & 4 != 0 {
+                    let new_h = (g.h - dy).max(MIN_WIN_H);
+                    g.y += g.h - new_h;
+                    g.h = new_h;
+                }
+                meta.geom = g;
+                (g, meta.decorated)
+            };
+            let (cwid, chei) = g.content_size(decorated);
+            let _ = cmd_tx.send(Command::ResizeWindow {
+                id: WindowId(id),
+                width: cwid,
+                height: chei,
+            });
+            if let Some(row) = s.rows.get(&id).copied() {
+                if let Some(mut t) = windows_model.row_data(row) {
+                    t.x = g.x;
+                    t.y = g.y;
+                    t.width = g.w;
+                    t.height = g.h;
+                    windows_model.set_row_data(row, t);
+                }
+            }
+        }
+    });
+
     ui.global::<Logic>().on_pointer_moved({
         let cmd_tx = cmd_tx.clone();
         let mark_active = mark_active.clone();
@@ -940,7 +1083,18 @@ fn main() -> anyhow::Result<()> {
                         log::info!("compositor ready: {env:?}");
                     }
                     Event::WindowAdded(id) => {
-                        shared.borrow_mut().meta.entry(id.0).or_default();
+                        // Give the new window a floating frame and size its client
+                        // surface to that frame's content area.
+                        let (cw, ch) = shared.borrow().content;
+                        let geom = default_geom(id.0, cw, ch);
+                        let decorated = {
+                            let mut s = shared.borrow_mut();
+                            let meta = s.meta.entry(id.0).or_default();
+                            meta.geom = geom;
+                            meta.decorated
+                        };
+                        let (w, h) = geom.content_size(decorated);
+                        let _ = cmd_tx.send(Command::ResizeWindow { id, width: w, height: h });
                         tasks.borrow_mut().assign_window(id);
                         *focused.borrow_mut() = Some(id);
                         let _ = cmd_tx.send(Command::FocusWindow(id));
@@ -964,10 +1118,21 @@ fn main() -> anyhow::Result<()> {
                         dirty_windows = true;
                     }
                     Event::WindowDecorated { id, decorated } => {
-                        let mut s = shared.borrow_mut();
-                        let meta = s.meta.entry(id.0).or_default();
-                        if meta.decorated != decorated {
-                            meta.decorated = decorated;
+                        let geom = {
+                            let mut s = shared.borrow_mut();
+                            let meta = s.meta.entry(id.0).or_default();
+                            if meta.decorated == decorated {
+                                None
+                            } else {
+                                meta.decorated = decorated;
+                                Some(meta.geom)
+                            }
+                        };
+                        // Adding/removing the title bar changes the content height;
+                        // re-size the client to match.
+                        if let Some(geom) = geom {
+                            let (w, h) = geom.content_size(decorated);
+                            let _ = cmd_tx.send(Command::ResizeWindow { id, width: w, height: h });
                             dirty_windows = true;
                         }
                     }
@@ -982,7 +1147,11 @@ fn main() -> anyhow::Result<()> {
                     } => {
                         let mut s = shared.borrow_mut();
                         let meta = s.meta.entry(id.0).or_default();
+                        let mut decoration_changed = None;
                         if meta.title != title || meta.decorated != decorated {
+                            if meta.decorated != decorated {
+                                decoration_changed = Some(meta.geom);
+                            }
                             meta.title = title;
                             meta.decorated = decorated;
                             dirty_windows = true;
@@ -996,6 +1165,12 @@ fn main() -> anyhow::Result<()> {
                                 pixels,
                             },
                         );
+                        // If the decoration mode was first learned here, re-size
+                        // the client to its content area (frame minus title bar).
+                        if let Some(geom) = decoration_changed {
+                            let (w, h) = geom.content_size(decorated);
+                            let _ = cmd_tx.send(Command::ResizeWindow { id, width: w, height: h });
+                        }
                         // First buffer for a window on the active task: ensure it
                         // has a row.
                         if tasks.borrow().is_visible(id) && !s.rows.contains_key(&id.0) {
@@ -1222,7 +1397,23 @@ fn main() -> anyhow::Result<()> {
 
             // Keep the compositor output sized to the host window's content area.
             if let Some(ui) = weak.upgrade() {
-                sync_output_size(&ui, &cmd_tx, &tasks, &shared);
+                // Floating frames keep their size; re-clamp them when the content
+                // area changes so a title bar can't end up off-screen.
+                if sync_output_size(&ui, &cmd_tx, &shared) {
+                    rebuild_windows();
+                }
+                // New client frames are uploaded to GL textures in the rendering
+                // notifier's `BeforeRendering` hook, which only runs when the
+                // window actually repaints. This timer tick doesn't repaint on
+                // its own, so without a nudge here a client that redraws without
+                // any host-side input (e.g. text appearing as you type, a video,
+                // a blinking cursor) would only surface on the next unrelated
+                // redraw — typically a mouse click. Request a repaint whenever
+                // frames are waiting to be uploaded.
+                let s = shared.borrow();
+                if !s.pending.is_empty() || !s.pending_dmabuf.is_empty() {
+                    ui.window().request_redraw();
+                }
             }
         }
     });
@@ -1312,8 +1503,13 @@ fn popup_origin(
         return (0.0, 0.0);
     };
     if shared.rows.contains_key(&parent.0) {
-        let decorated = shared.meta.get(&parent.0).map(|m| m.decorated).unwrap_or(false);
-        return (0.0, if decorated { 30.0 } else { 0.0 });
+        // Anchor to the parent window's floating frame: its top-left, dropped
+        // below the title bar when the frame is decorated.
+        if let Some(meta) = shared.meta.get(&parent.0) {
+            let bar = if meta.decorated { TITLE_BAR_H } else { 0.0 };
+            return (meta.geom.x, meta.geom.y + bar);
+        }
+        return (0.0, 0.0);
     }
     if let Some(&row) = shared.popup_rows.get(&parent.0) {
         if let Some(t) = popups_model.row_data(row) {
@@ -1338,9 +1534,9 @@ fn place_texture(
     shared.tiles.insert(id, (w, h, image.clone()));
     if let Some(row) = shared.rows.get(&id).copied() {
         if let Some(mut t) = windows_model.row_data(row) {
+            // Only swap the texture: a window's `width`/`height` are its floating
+            // frame size (host-driven), not the buffer's pixel size.
             t.texture = image;
-            t.width = w;
-            t.height = h;
             windows_model.set_row_data(row, t);
         }
     } else if let Some(row) = shared.popup_rows.get(&id).copied() {
@@ -1515,14 +1711,15 @@ fn build_report(list: &TaskList, ui: &Desktop, anchor: chrono::NaiveDate) {
     rd.set_can_forward(anchor < Local::now().date_naive());
 }
 
-/// Track the host window size and resize the compositor output + active windows
-/// to fill the content area (window region right of the sidebar, below header).
+/// Track the host window size and resize the compositor output to the content
+/// area (the window region right of the sidebar). Floating windows keep their
+/// own geometry; only the virtual output follows the host. Returns `true` when
+/// the content size changed (so the caller can re-clamp/rebuild window frames).
 fn sync_output_size(
     ui: &Desktop,
     cmd_tx: &focuswm_wayland::CommandSender<Command>,
-    tasks: &Rc<RefCell<TaskList>>,
     shared: &Rc<RefCell<Shared>>,
-) {
+) -> bool {
     thread_local! {
         static LAST: RefCell<(i32, i32)> = const { RefCell::new((0, 0)) };
     }
@@ -1543,22 +1740,13 @@ fn sync_output_size(
         }
     });
     if changed {
+        shared.borrow_mut().content = (content_w as f32, content_h as f32);
         let _ = cmd_tx.send(Command::ResizeOutput {
             width: content_w,
             height: content_h,
         });
-        let shared = shared.borrow();
-        for w in tasks.borrow().active_windows() {
-            // Decorated windows leave room for the 30px server-side title bar.
-            let decorated = shared.meta.get(&w.0).map(|m| m.decorated).unwrap_or(false);
-            let h = if decorated { (content_h - 30).max(1) } else { content_h };
-            let _ = cmd_tx.send(Command::ResizeWindow {
-                id: w,
-                width: content_w,
-                height: h,
-            });
-        }
     }
+    changed
 }
 
 /// Spawn a client program into the compositor, surfacing failures as a toast.
