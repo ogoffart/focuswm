@@ -1593,8 +1593,15 @@ fn main() -> anyhow::Result<()> {
                 // a blinking cursor) would only surface on the next unrelated
                 // redraw — typically a mouse click. Request a repaint whenever
                 // frames are waiting to be uploaded.
-                let s = shared.borrow();
-                if !s.pending.is_empty() || !s.pending_dmabuf.is_empty() {
+                let frames_pending = {
+                    let s = shared.borrow();
+                    !s.pending.is_empty() || !s.pending_dmabuf.is_empty()
+                };
+                // Also repaint while a UI animation is in flight (maximize /
+                // minimize / snap glide): those change no client frames, so
+                // without this nudge the animation wouldn't advance until some
+                // unrelated input (e.g. a mouse move) forced a redraw.
+                if frames_pending || ui.window().has_active_animations() {
                     ui.window().request_redraw();
                 }
             }

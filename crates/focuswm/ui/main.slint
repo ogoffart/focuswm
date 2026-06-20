@@ -122,9 +122,10 @@ component WindowView inherits Rectangle {
     height: root.fh * root.factor;
     x: root.fx + (root.fw - self.width) / 2;
     y: root.fy + (root.fh - self.height) / 2;
-    // Accent outline marks the keyboard-focused window (works for client-side-
-    // decorated windows too); unfocused decorated frames keep a subtle border.
-    border-width: tile.focused ? 1.5px : (tile.decorated ? 1px : 0px);
+    // Only server-side-decorated frames get a border/outline — client-side-
+    // decorated windows draw (and shadow) their own frame, so any border we add
+    // wraps that and looks wrong. Focused = accent outline, else a subtle one.
+    border-width: tile.decorated ? (tile.focused ? 1.5px : 1px) : 0px;
     border-color: tile.focused ? Theme.accent : Theme.border;
     border-radius: tile.decorated && !tile.maximized ? 8px : 0px;
 
