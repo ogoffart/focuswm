@@ -587,10 +587,16 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_link_issue({
         let pending_link = pending_link.clone();
         let issue_results_model = issue_results_model.clone();
+        let weak = weak.clone();
         move |slug, number, title, url| {
             if slug.is_empty() {
                 *pending_link.borrow_mut() = None;
                 issue_results_model.set_vec(Vec::new());
+                // Reset the search state too, so a search left in flight when the
+                // wizard was closed doesn't leave the button stuck on "…".
+                if let Some(ui) = weak.upgrade() {
+                    ui.global::<AppData>().set_issue_searching(false);
+                }
                 return;
             }
             *pending_link.borrow_mut() = Some(focuswm_shell::GithubLink {

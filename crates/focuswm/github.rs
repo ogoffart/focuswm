@@ -56,11 +56,16 @@ pub fn spawn() -> Option<Github> {
                     return;
                 }
             };
-            let octo = match octocrab::Octocrab::builder().personal_token(token).build() {
-                Ok(o) => o,
-                Err(e) => {
-                    log::warn!("github: could not build client: {e}");
-                    return;
+            let octo = {
+                // Build inside the runtime: octocrab's HTTP client wants a
+                // reactor available, and building it outside would panic.
+                let _guard = rt.enter();
+                match octocrab::Octocrab::builder().personal_token(token).build() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        log::warn!("github: could not build client: {e}");
+                        return;
+                    }
                 }
             };
             rt.block_on(async move {
