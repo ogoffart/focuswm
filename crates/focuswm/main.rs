@@ -355,9 +355,10 @@ fn main() -> anyhow::Result<()> {
         Rc::new(move || {
             let list = tasks.borrow();
             let mut shared = shared.borrow_mut();
+            let focused_win = *focused.borrow();
             let mut active_windows = list.active_windows();
             // Render the focused window last so it stacks on top.
-            if let Some(f) = *focused.borrow() {
+            if let Some(f) = focused_win {
                 if let Some(pos) = active_windows.iter().position(|w| *w == f) {
                     let w = active_windows.remove(pos);
                     active_windows.push(w);
@@ -394,11 +395,32 @@ fn main() -> anyhow::Result<()> {
                     decorated,
                     minimized: list.is_minimized(*wid),
                     maximized: list.is_maximized(*wid),
+                    focused: focused_win == Some(*wid),
                 });
                 rows.insert(id, row);
             }
             shared.rows = rows;
             windows_model.set_vec(tiles);
+        })
+    };
+
+    // Update just the `focused` highlight on each window row, without rebuilding
+    // or restacking. Used when focus-follows-mouse moves focus on hover (where a
+    // full rebuild would churn the z-order as the pointer travels).
+    let refresh_focus_highlight: Rc<dyn Fn()> = {
+        let windows_model = windows_model.clone();
+        let focused = focused.clone();
+        Rc::new(move || {
+            let f = focused.borrow().map(|w| w.0 as i32);
+            for row in 0..windows_model.row_count() {
+                if let Some(mut t) = windows_model.row_data(row) {
+                    let want = f == Some(t.id);
+                    if t.focused != want {
+                        t.focused = want;
+                        windows_model.set_row_data(row, t);
+                    }
+                }
+            }
         })
     };
 
@@ -1074,6 +1096,7 @@ fn main() -> anyhow::Result<()> {
         let tasks = tasks.clone();
         let shared = shared.clone();
         let focused = focused.clone();
+        let refresh_focus_highlight = refresh_focus_highlight.clone();
         move |id, x, y| {
             mark_active();
             let wid = WindowId(id as u64);
@@ -1086,6 +1109,7 @@ fn main() -> anyhow::Result<()> {
             {
                 *focused.borrow_mut() = Some(wid);
                 let _ = cmd_tx.send(Command::FocusWindow(wid));
+                refresh_focus_highlight();
             }
             let _ = cmd_tx.send(Command::PointerMotion {
                 id: wid,

@@ -86,11 +86,17 @@ component WindowView inherits Rectangle {
 
     forward-focus: fs;
 
+    // Accent outline marks the keyboard-focused window (helps tell overlapping
+    // floating windows apart, and works for client-side-decorated windows too).
+    border-width: tile.focused ? 1.5px : 0px;
+    border-color: Theme.accent;
+
     VerticalLayout {
         // Server-side decoration title bar.
         if tile.decorated: Rectangle {
             height: 30px;
-            background: Theme.sidebar-bg;
+            // Focused windows get an accent-tinted bar; unfocused ones stay dark.
+            background: tile.focused ? Theme.accent-soft : Theme.sidebar-bg;
             // Drag anywhere on the bar (the close button, declared on top,
             // takes its own area) to move the floating window. The delta is the
             // cursor's offset from the press; the host applies it incrementally.
@@ -109,7 +115,7 @@ component WindowView inherits Rectangle {
                 spacing: 6px;
                 Text {
                     text: tile.title == "" ? "(untitled)" : tile.title;
-                    color: Theme.text;
+                    color: tile.focused ? Theme.text : Theme.text-dim;
                     font-size: Theme.fs-body;
                     font-weight: 600;
                     vertical-alignment: center;
