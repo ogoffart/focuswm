@@ -184,6 +184,9 @@ fn main() -> anyhow::Result<()> {
     shared.borrow_mut().content = ((focuswm_wayland::OUTPUT_W - 240) as f32, focuswm_wayland::OUTPUT_H as f32);
     let bridge = Rc::new(RefCell::new(GlBridge::default()));
     let spawn_env = Rc::new(RefCell::new(SpawnEnv::default()));
+    // Holds focuswm's private D-Bus daemon (started once the compositor is
+    // ready) alive for the lifetime of the session.
+    let dbus_daemon: Rc<RefCell<Option<std::process::Child>>> = Rc::new(RefCell::new(None));
     let start = Instant::now();
     let now_secs = move || start.elapsed().as_secs();
 
@@ -1099,6 +1102,7 @@ fn main() -> anyhow::Result<()> {
         let tasks = tasks.clone();
         let shared = shared.clone();
         let spawn_env = spawn_env.clone();
+        let dbus_daemon = dbus_daemon.clone();
         let rebuild_windows = rebuild_windows.clone();
         let refresh_tasks = refresh_tasks.clone();
         let popups_model = popups_model.clone();
@@ -1123,6 +1127,16 @@ fn main() -> anyhow::Result<()> {
                         let mut env = spawn_env.borrow_mut();
                         env.wayland_display = socket_name;
                         env.runtime_dir = runtime_dir;
+                        // Start a private session bus so clients don't remote
+                        // into the parent session's app servers.
+                        if dbus_daemon.borrow().is_none() {
+                            if let Some((child, addr)) =
+                                config::start_private_dbus(&env.wayland_display, &env.runtime_dir)
+                            {
+                                env.dbus_address = Some(addr);
+                                *dbus_daemon.borrow_mut() = Some(child);
+                            }
+                        }
                         log::info!("compositor ready: {env:?}");
                     }
                     Event::WindowAdded(id) => {

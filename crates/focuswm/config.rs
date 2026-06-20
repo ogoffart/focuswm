@@ -11,6 +11,53 @@ pub struct SpawnEnv {
     pub runtime_dir: String,
     /// X11 display number from XWayland (e.g. `:1`), once it is ready.
     pub x_display: Option<u32>,
+    /// Address of focuswm's private D-Bus session, if one was started. Clients
+    /// run on it so apps that "remote" over the session bus (gnome-terminal,
+    /// konsole, Firefox, …) spawn a fresh instance inside focuswm rather than
+    /// handing the window to a server already running in the parent session.
+    pub dbus_address: Option<String>,
+}
+
+/// Start a private D-Bus session daemon for focuswm's clients and return its
+/// address. The daemon inherits `wayland_display`/`runtime_dir` so services it
+/// activates (e.g. `gnome-terminal-server`) connect to our compositor. The
+/// daemon process is returned so the caller can keep it alive for the session;
+/// dropping it tears the bus down. Returns `None` if `dbus-daemon` is missing.
+pub fn start_private_dbus(
+    wayland_display: &str,
+    runtime_dir: &str,
+) -> Option<(std::process::Child, String)> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let mut child = Command::new("dbus-daemon")
+        .args(["--session", "--print-address", "--nofork", "--nopidfile"])
+        .env("WAYLAND_DISPLAY", wayland_display)
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| log::warn!("private dbus: could not start dbus-daemon ({e}); clients share the session bus"))
+        .ok()?;
+
+    let stdout = child.stdout.take()?;
+    let mut reader = BufReader::new(stdout);
+    let mut address = String::new();
+    if reader.read_line(&mut address).is_err() || address.trim().is_empty() {
+        log::warn!("private dbus: dbus-daemon printed no address; clients share the session bus");
+        let _ = child.kill();
+        return None;
+    }
+    let address = address.trim().to_string();
+    // Keep draining stdout so the daemon never blocks/SIGPIPEs on a full pipe.
+    std::thread::spawn(move || {
+        let mut sink = String::new();
+        while reader.read_line(&mut sink).map(|n| n > 0).unwrap_or(false) {
+            sink.clear();
+        }
+    });
+    log::info!("private dbus: clients use {address}");
+    Some((child, address))
 }
 
 /// Find a terminal emulator, preferring Wayland-native ones. Returns the program
@@ -92,6 +139,12 @@ pub fn spawn(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>) -> Result<(), St
         .env("QT_QPA_PLATFORM", "wayland")
         // Make Firefox/Thunderbird use our Wayland socket rather than XWayland.
         .env("MOZ_ENABLE_WAYLAND", "1");
+    // Route clients onto focuswm's private session bus so they don't remote
+    // into servers (gnome-terminal-server, an existing browser, …) running in
+    // the parent session.
+    if let Some(addr) = &env.dbus_address {
+        command.env("DBUS_SESSION_BUS_ADDRESS", addr);
+    }
     // Point X11-only apps at our XWayland server. When it isn't up, force an
     // empty DISPLAY so X11 clients fail to connect rather than fall through to
     // the X server of the session focuswm runs in (which would make them open
@@ -110,13 +163,14 @@ pub fn spawn(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>) -> Result<(), St
         command.current_dir(dir);
     }
     log::info!(
-        "spawning {program} {args:?} with WAYLAND_DISPLAY={} XDG_RUNTIME_DIR={} DISPLAY={}",
+        "spawning {program} {args:?} with WAYLAND_DISPLAY={} XDG_RUNTIME_DIR={} DISPLAY={} private-dbus={}",
         env.wayland_display,
         env.runtime_dir,
         match env.x_display {
             Some(n) => format!(":{n}"),
             None => "<unset: XWayland unavailable>".to_string(),
         },
+        env.dbus_address.is_some(),
     );
     match command.spawn() {
         Ok(_) => Ok(()),
