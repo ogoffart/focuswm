@@ -5,6 +5,7 @@ import { Sidebar } from "sidebar.slint";
 import { Wizard } from "wizard.slint";
 import { Settings } from "settings.slint";
 import { TaskSettings } from "task_settings.slint";
+import { Launcher } from "launcher.slint";
 import { Report } from "report.slint";
 import { LockScreen } from "lock.slint";
 import { Palette } from "std-widgets.slint";
@@ -153,6 +154,7 @@ export component Desktop inherits Window {
     in-out property <bool> settings-open: false;
     in-out property <bool> task-settings-open: false;
     in-out property <bool> report-open: false;
+    in-out property <bool> launcher-open: false;
     in-out property <bool> locked: false;
 
     // Match std-widgets to the dark theme.
@@ -170,6 +172,12 @@ export component Desktop inherits Window {
             // Alt+Tab / Alt+Shift+Tab: cycle the active task's windows.
             if (e.modifiers.alt && e.text == Key.Tab) {
                 Logic.cycle-window(!e.modifiers.shift);
+                return accept;
+            }
+            // Alt+F2: run-command dialog.
+            if (e.modifiers.alt && e.text == Key.F2) {
+                launcher.reset();
+                root.launcher-open = true;
                 return accept;
             }
             if (e.modifiers.meta) {
@@ -190,6 +198,10 @@ export component Desktop inherits Window {
             add-clicked => {
                 wizard.reset();
                 root.wizard-open = true;
+            }
+            launch-clicked => {
+                launcher.reset();
+                root.launcher-open = true;
             }
         }
 
@@ -266,6 +278,15 @@ export component Desktop inherits Window {
         width: 100%;
         height: 100%;
         close => { root.report-open = false; }
+    }
+
+    // Run-command launcher overlay.
+    launcher := Launcher {
+        visible: root.launcher-open;
+        x: 0; y: 0;
+        width: 100%;
+        height: 100%;
+        close => { root.launcher-open = false; }
     }
 
     // Notification toasts (top-right stack).

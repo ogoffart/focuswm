@@ -1,0 +1,63 @@
+import { Theme, Card } from "theme.slint";
+import { Logic } from "globals.slint";
+import { LineEdit, Button } from "std-widgets.slint";
+
+// A run-command dialog (Alt+F2): type a command line and launch it as a client.
+export component Launcher inherits Rectangle {
+    callback close();
+    background: Theme.scrim;
+
+    public function reset() {
+        edit.text = "";
+    }
+
+    // Focus the field whenever the dialog is shown.
+    changed visible => {
+        if (root.visible) {
+            edit.focus();
+        }
+    }
+
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    Card {
+        width: 460px;
+        height: layout.preferred-height + 2 * Theme.sp-6;
+
+        TouchArea {}
+
+        layout := VerticalLayout {
+            padding: Theme.sp-6;
+            spacing: Theme.sp-3;
+
+            Text { text: "Run command"; color: Theme.text; font-size: Theme.fs-title; font-weight: 700; }
+
+            edit := LineEdit {
+                placeholder-text: "e.g. firefox, alacritty -e htop";
+                accepted => {
+                    if (self.text != "") {
+                        Logic.run-command(self.text);
+                        root.close();
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+                Button { text: "Cancel"; clicked => { root.close(); } }
+                Button {
+                    text: "Run";
+                    primary: true;
+                    enabled: edit.text != "";
+                    clicked => {
+                        Logic.run-command(edit.text);
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+}

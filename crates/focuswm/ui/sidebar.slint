@@ -225,6 +225,7 @@ component TaskRow inherits Rectangle {
 
 export component Sidebar inherits Rectangle {
     callback add-clicked();
+    callback launch-clicked();
     width: Theme.sidebar-width;
     background: Theme.sidebar-bg;
 
@@ -381,6 +382,12 @@ export component Sidebar inherits Rectangle {
                 width: 40px;
                 text: "⚙";
                 clicked => { Logic.open-settings(); }
+            }
+            Button {
+                height: 32px;
+                width: 40px;
+                text: "▶";
+                clicked => { root.launch-clicked(); }
             }
             Button {
                 height: 32px;

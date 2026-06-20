@@ -97,6 +97,8 @@ export global Logic {
     // Task header actions.
     callback open-browser();
     callback open-terminal();
+    // Launch an arbitrary command line as a client (run dialog / Alt+F2).
+    callback run-command(string /* command */);
     // Settings + report (host populates data and toggles the dialog).
     callback open-settings();
     callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */, string /* idle-minutes */);

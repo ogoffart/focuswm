@@ -247,6 +247,11 @@ fn main() {
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_task_settings.png");
     ui.set_task_settings_open(false);
 
+    // The run-command launcher.
+    ui.set_launcher_open(true);
+    save(&ui, &window, PhysicalSize::new(1280, 800), "shot_launcher.png");
+    ui.set_launcher_open(false);
+
     // The lock screen.
     ui.set_locked(true);
     save(&ui, &window, PhysicalSize::new(1280, 800), "shot_lock.png");

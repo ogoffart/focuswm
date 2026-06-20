@@ -570,6 +570,20 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Run-command launcher (Alt+F2 / sidebar ▶): spawn an arbitrary command.
+    ui.global::<Logic>().on_run_command({
+        let spawn_env = spawn_env.clone();
+        let mark_active = mark_active.clone();
+        let toast_tx = toast_tx.clone();
+        move |cmd| {
+            mark_active();
+            let parts = config::split_command(cmd.as_str());
+            if !parts.is_empty() {
+                spawn_client(&parts, &spawn_env.borrow(), None, &toast_tx);
+            }
+        }
+    });
+
     // Settings dialog: populate fields and open.
     ui.global::<Logic>().on_open_settings({
         let tasks = tasks.clone();
