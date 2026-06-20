@@ -848,6 +848,10 @@ mod tests {
     fn settings_round_trip_and_defaults() {
         let list = TaskList::new();
         assert!(list.settings().categories.contains(&"work".to_string()));
+        // Focus-follows-mouse defaults on (and old configs without the field
+        // deserialize to the same default via serde).
+        assert!(list.settings().focus_follows_mouse);
+        assert!(Settings::default().focus_follows_mouse);
         let mut list = list;
         list.set_settings(Settings {
             terminal: "foot".into(),

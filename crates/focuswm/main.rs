@@ -122,6 +122,14 @@ fn default_geom(id: u64, cw: f32, ch: f32) -> WinGeom {
     geom
 }
 
+/// Number of slots to move a dragged sidebar task, from its vertical drag
+/// distance `dy` (logical px). Must use the same pitch as `row-pitch` in
+/// sidebar.slint (row height + gap).
+fn reorder_delta(dy: f32) -> i32 {
+    const ROW_PITCH: f32 = 64.0;
+    (dy / ROW_PITCH).round() as i32
+}
+
 /// UI-thread state shared between the event pump and the rendering notifier.
 #[derive(Default)]
 struct Shared {
@@ -638,8 +646,7 @@ fn main() -> anyhow::Result<()> {
         let mark_active = mark_active.clone();
         move |id, dy| {
             mark_active();
-            const ROW_PITCH: f32 = 64.0;
-            let delta = (dy / ROW_PITCH).round() as i32;
+            let delta = reorder_delta(dy);
             if delta != 0 {
                 let mut list = tasks.borrow_mut();
                 if let Some(from) = list.tasks().iter().position(|t| t.id.0 == id as u64) {
@@ -2314,5 +2321,50 @@ mod tests {
         assert_eq!(special_keycode("~"), None);
         assert_eq!(special_keycode("é"), None);
         assert_eq!(special_keycode("1"), None);
+    }
+
+    #[test]
+    fn reorder_delta_rounds_to_nearest_slot() {
+        assert_eq!(reorder_delta(0.0), 0);
+        assert_eq!(reorder_delta(20.0), 0); // less than half a row → stay
+        assert_eq!(reorder_delta(40.0), 1); // past the midpoint → down one
+        assert_eq!(reorder_delta(64.0), 1);
+        assert_eq!(reorder_delta(130.0), 2);
+        assert_eq!(reorder_delta(-40.0), -1); // up one
+        assert_eq!(reorder_delta(-130.0), -2);
+    }
+
+    #[test]
+    fn win_geom_content_size_accounts_for_title_bar() {
+        let g = WinGeom { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        // Decorated: the client area is the frame minus the title bar.
+        assert_eq!(g.content_size(true), (800, 600 - TITLE_BAR_H as i32));
+        // Undecorated: the whole frame is client area.
+        assert_eq!(g.content_size(false), (800, 600));
+    }
+
+    #[test]
+    fn win_geom_clamp_keeps_title_bar_reachable() {
+        let (cw, ch) = (1000.0, 700.0);
+        // Dragged far off the bottom-right: clamped back into reach.
+        let mut g = WinGeom { x: 5000.0, y: 5000.0, w: 400.0, h: 300.0 };
+        g.clamp_pos(cw, ch);
+        assert!(g.x <= cw && g.y >= 0.0 && g.y <= ch - TITLE_BAR_H);
+        // Dragged far off the top-left: still keeps part of the frame on-screen.
+        let mut g = WinGeom { x: -5000.0, y: -5000.0, w: 400.0, h: 300.0 };
+        g.clamp_pos(cw, ch);
+        assert!(g.x + g.w >= 0.0 && g.y >= 0.0);
+    }
+
+    #[test]
+    fn default_geom_fits_inside_content_and_cascades() {
+        let (cw, ch) = (1040.0, 800.0);
+        let a = default_geom(0, cw, ch);
+        let b = default_geom(1, cw, ch);
+        // Inside the content area and at least the minimum size.
+        assert!(a.w >= MIN_WIN_W && a.h >= MIN_WIN_H);
+        assert!(a.x >= 0.0 && a.y >= 0.0 && a.x + a.w <= cw && a.y + a.h <= ch);
+        // Successive windows cascade so they don't perfectly overlap.
+        assert!(b.x > a.x && b.y > a.y);
     }
 }
