@@ -215,14 +215,14 @@ fn main() {
 
     // The time report, with sample figures.
     let cat_rows = vec![
-        ReportRow { label: "work".into(), today: "1h 12m".into(), week: "6h 40m".into() },
-        ReportRow { label: "learning".into(), today: "30m".into(), week: "3h 05m".into() },
-        ReportRow { label: "personal".into(), today: "0m".into(), week: "45m".into() },
+        ReportRow { label: "work".into(), today: "1h 12m 18s".into(), week: "6h 40m 02s".into() },
+        ReportRow { label: "learning".into(), today: "30m 45s".into(), week: "3h 05m 30s".into() },
+        ReportRow { label: "personal".into(), today: "0s".into(), week: "45m 12s".into() },
     ];
     let proj_rows = vec![
-        ReportRow { label: "Fix login bug".into(), today: "42m".into(), week: "4h 10m".into() },
-        ReportRow { label: "Review PR #128".into(), today: "30m".into(), week: "2h 30m".into() },
-        ReportRow { label: "Read Wayland book".into(), today: "30m".into(), week: "3h 05m".into() },
+        ReportRow { label: "Fix login bug".into(), today: "42m 08s".into(), week: "4h 10m 33s".into() },
+        ReportRow { label: "Review PR #128".into(), today: "30m 10s".into(), week: "2h 30m 50s".into() },
+        ReportRow { label: "Read Wayland book".into(), today: "30m 27s".into(), week: "3h 05m 21s".into() },
     ];
     let bar = |label: &str, value: &str, fraction: f32, selected: bool| DayBar {
         label: label.into(),
@@ -242,8 +242,8 @@ fn main() {
     let rd = ui.global::<ReportData>();
     rd.set_day_label("Fri Jun 19".into());
     rd.set_week_label("Jun 15 – Jun 21".into());
-    rd.set_day_total("1h 42m".into());
-    rd.set_week_total("10h 30m".into());
+    rd.set_day_total("1h 43m 03s".into());
+    rd.set_week_total("10h 30m 49s".into());
     rd.set_can_forward(true);
     rd.set_week_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
     rd.set_by_category(ModelRc::from(Rc::new(VecModel::from(cat_rows))));

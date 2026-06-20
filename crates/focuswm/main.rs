@@ -1668,17 +1668,23 @@ fn today() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// Format a duration in seconds as "Xh Ym" or "Ym".
+/// Format a duration in seconds as "Xh Ym Zs" (dropping leading zero units), so
+/// reports show the exact tracked time down to the second — nothing is lost to
+/// whole-minute rounding.
 fn fmt_dur(secs: u64) -> String {
-    let m = secs / 60;
-    if m >= 60 {
-        format!("{}h {}m", m / 60, m % 60)
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}h {m}m {s}s")
+    } else if m > 0 {
+        format!("{m}m {s}s")
     } else {
-        format!("{m}m")
+        format!("{s}s")
     }
 }
 
-/// Short duration for the bar-graph labels: "2h", "30m", or "" for zero.
+/// Short duration for the bar-graph labels: "2h", "30m", "45s", or "" for zero.
 fn fmt_short(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -1686,6 +1692,8 @@ fn fmt_short(secs: u64) -> String {
         format!("{h}h")
     } else if m > 0 {
         format!("{m}m")
+    } else if secs > 0 {
+        format!("{secs}s")
     } else {
         String::new()
     }
@@ -2058,12 +2066,14 @@ mod tests {
     }
 
     #[test]
-    fn fmt_dur_formats_hours_and_minutes() {
-        assert_eq!(fmt_dur(0), "0m");
-        assert_eq!(fmt_dur(90), "1m");
-        assert_eq!(fmt_dur(3600), "1h 0m");
-        assert_eq!(fmt_dur(3660), "1h 1m");
+    fn fmt_dur_shows_exact_seconds() {
+        assert_eq!(fmt_dur(0), "0s");
+        assert_eq!(fmt_dur(45), "45s");
+        assert_eq!(fmt_dur(90), "1m 30s");
+        assert_eq!(fmt_dur(3600), "1h 0m 0s");
+        assert_eq!(fmt_dur(3661), "1h 1m 1s");
         assert_eq!(fmt_short(0), "");
+        assert_eq!(fmt_short(45), "45s");
         assert_eq!(fmt_short(120), "2m");
         assert_eq!(fmt_short(7200), "2h");
     }

@@ -13,14 +13,14 @@ component ReportTable inherits VerticalLayout {
     HorizontalLayout {
         spacing: 8px;
         Text { text: ""; horizontal-stretch: 1; }
-        Text { text: "Day"; color: Theme.text-dim; font-size: 11px; width: 72px; horizontal-alignment: right; }
-        Text { text: "Week"; color: Theme.text-dim; font-size: 11px; width: 72px; horizontal-alignment: right; }
+        Text { text: "Day"; color: Theme.text-dim; font-size: 11px; width: 96px; horizontal-alignment: right; }
+        Text { text: "Week"; color: Theme.text-dim; font-size: 11px; width: 96px; horizontal-alignment: right; }
     }
     for r in root.rows: HorizontalLayout {
         spacing: 8px;
         Text { text: r.label; color: Theme.text; font-size: 13px; horizontal-stretch: 1; overflow: elide; }
-        Text { text: r.today; color: Theme.text-dim; font-size: 13px; width: 72px; horizontal-alignment: right; }
-        Text { text: r.week; color: Theme.text; font-size: 13px; width: 72px; horizontal-alignment: right; }
+        Text { text: r.today; color: Theme.text-dim; font-size: 13px; width: 96px; horizontal-alignment: right; }
+        Text { text: r.week; color: Theme.text; font-size: 13px; width: 96px; horizontal-alignment: right; }
     }
     if root.rows.length == 0: Text { text: "No time logged."; color: Theme.text-dim; font-size: 12px; }
 }
