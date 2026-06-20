@@ -92,7 +92,7 @@ impl WinMeta {
 }
 
 /// A floating window's frame rectangle, in content-area logical px.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
 struct WinGeom {
     x: f32,
     y: f32,
@@ -115,6 +115,55 @@ impl WinGeom {
         self.x = self.x.clamp(KEEP - self.w, (cw - KEEP).max(0.0));
         self.y = self.y.clamp(0.0, (ch - TITLE_BAR_H).max(0.0));
     }
+
+    /// Resize the frame by dragging `edges` (bitmask 1=left 2=right 4=top
+    /// 8=bottom) by `(dx, dy)`, clamped to `(min_w, min_h, max_w, max_h)`.
+    /// Dragging the left/top edge keeps the opposite edge anchored by moving the
+    /// origin to match the clamped size.
+    fn resize_by(&mut self, edges: i32, dx: f32, dy: f32, bounds: (f32, f32, f32, f32)) {
+        let (min_w, min_h, max_w, max_h) = bounds;
+        if edges & 2 != 0 {
+            self.w = (self.w + dx).clamp(min_w, max_w);
+        }
+        if edges & 1 != 0 {
+            let new_w = (self.w - dx).clamp(min_w, max_w);
+            self.x += self.w - new_w;
+            self.w = new_w;
+        }
+        if edges & 8 != 0 {
+            self.h = (self.h + dy).clamp(min_h, max_h);
+        }
+        if edges & 4 != 0 {
+            let new_h = (self.h - dy).clamp(min_h, max_h);
+            self.y += self.h - new_h;
+            self.h = new_h;
+        }
+    }
+}
+
+/// The frame for snapping a window into `zone` of a `cw`×`ch` content area:
+/// 1=left half, 2=right half, 4..7=corner quarters, anything else=maximize
+/// (the whole area). The result is not yet clamped to the client's size hints.
+fn snap_geom(zone: i32, cw: f32, ch: f32) -> WinGeom {
+    let (hw, hh) = (cw / 2.0, ch / 2.0);
+    match zone {
+        1 => WinGeom { x: 0.0, y: 0.0, w: hw, h: ch },  // left half
+        2 => WinGeom { x: hw, y: 0.0, w: hw, h: ch },   // right half
+        4 => WinGeom { x: 0.0, y: 0.0, w: hw, h: hh },  // top-left
+        5 => WinGeom { x: hw, y: 0.0, w: hw, h: hh },   // top-right
+        6 => WinGeom { x: 0.0, y: hh, w: hw, h: hh },   // bottom-left
+        7 => WinGeom { x: hw, y: hh, w: hw, h: hh },    // bottom-right
+        _ => WinGeom { x: 0.0, y: 0.0, w: cw, h: ch },  // maximize
+    }
+}
+
+/// The frame for a maximized window in a `cw`×`ch` content area, capped at the
+/// client's `max_w`/`max_h` (so a non-resizable client doesn't get a frame
+/// bigger than it renders into) and centred within the area.
+fn maximized_geom(cw: f32, ch: f32, max_w: f32, max_h: f32) -> WinGeom {
+    let w = cw.min(max_w);
+    let h = ch.min(max_h);
+    WinGeom { x: (cw - w) / 2.0, y: (ch - h) / 2.0, w, h }
 }
 
 /// A default frame for a freshly mapped window: ~72% of the content area, nudged
@@ -1123,25 +1172,9 @@ fn main() -> anyhow::Result<()> {
             let (g, decorated) = {
                 let Some(meta) = s.meta.get_mut(&id) else { return };
                 // Clamp to the client's min/max size hints (plus the global floor).
-                let (min_w, min_h, max_w, max_h) = meta.frame_bounds();
+                let bounds = meta.frame_bounds();
                 let mut g = meta.geom;
-                if edges & 2 != 0 {
-                    g.w = (g.w + dx).clamp(min_w, max_w);
-                }
-                if edges & 1 != 0 {
-                    // Left edge: move the origin but keep the right edge anchored.
-                    let new_w = (g.w - dx).clamp(min_w, max_w);
-                    g.x += g.w - new_w;
-                    g.w = new_w;
-                }
-                if edges & 8 != 0 {
-                    g.h = (g.h + dy).clamp(min_h, max_h);
-                }
-                if edges & 4 != 0 {
-                    let new_h = (g.h - dy).clamp(min_h, max_h);
-                    g.y += g.h - new_h;
-                    g.h = new_h;
-                }
+                g.resize_by(edges, dx, dy, bounds);
                 meta.geom = g;
                 (g, meta.decorated)
             };
@@ -1224,9 +1257,7 @@ fn main() -> anyhow::Result<()> {
                         // it to its cap and centre it instead of leaving the
                         // frame larger than what the client renders.
                         let (_, _, max_w, max_h) = meta.frame_bounds();
-                        let w = cw.min(max_w);
-                        let h = ch.min(max_h);
-                        meta.geom = WinGeom { x: (cw - w) / 2.0, y: (ch - h) / 2.0, w, h };
+                        meta.geom = maximized_geom(cw, ch, max_w, max_h);
                     } else {
                         meta.geom = meta.restore.take().unwrap_or(meta.geom);
                     }
@@ -1257,16 +1288,7 @@ fn main() -> anyhow::Result<()> {
                     if meta.restore.is_none() {
                         meta.restore = Some(meta.geom);
                     }
-                    let (hw, hh) = (cw / 2.0, ch / 2.0);
-                    meta.geom = match zone {
-                        1 => WinGeom { x: 0.0, y: 0.0, w: hw, h: ch },        // left half
-                        2 => WinGeom { x: hw, y: 0.0, w: hw, h: ch },         // right half
-                        4 => WinGeom { x: 0.0, y: 0.0, w: hw, h: hh },        // top-left
-                        5 => WinGeom { x: hw, y: 0.0, w: hw, h: hh },         // top-right
-                        6 => WinGeom { x: 0.0, y: hh, w: hw, h: hh },         // bottom-left
-                        7 => WinGeom { x: hw, y: hh, w: hw, h: hh },          // bottom-right
-                        _ => WinGeom { x: 0.0, y: 0.0, w: cw, h: ch },        // maximize
-                    };
+                    meta.geom = snap_geom(zone, cw, ch);
                     // Don't ask a non-resizable client for more than its max size.
                     let (_, _, max_w, max_h) = meta.frame_bounds();
                     meta.geom.w = meta.geom.w.min(max_w);
@@ -1286,11 +1308,15 @@ fn main() -> anyhow::Result<()> {
     // Keyboard window management (Super+arrows): apply snap/maximize/minimize to
     // the currently focused window by delegating to the id-based callbacks above,
     // so the restore-geometry bookkeeping stays in one place.
+    // NB: read `focused` into a local and drop the borrow *before* invoking the
+    // id-based callback — that callback re-enters the same `focused` RefCell
+    // (minimize moves focus), so holding a borrow across the invoke would panic.
     ui.global::<Logic>().on_snap_focused({
         let weak = weak.clone();
         let focused = focused.clone();
         move |zone| {
-            if let (Some(ui), Some(wid)) = (weak.upgrade(), *focused.borrow()) {
+            let wid = *focused.borrow();
+            if let (Some(ui), Some(wid)) = (weak.upgrade(), wid) {
                 ui.global::<Logic>().invoke_snap_window(wid.0 as i32, zone);
             }
         }
@@ -1299,7 +1325,8 @@ fn main() -> anyhow::Result<()> {
         let weak = weak.clone();
         let focused = focused.clone();
         move || {
-            if let (Some(ui), Some(wid)) = (weak.upgrade(), *focused.borrow()) {
+            let wid = *focused.borrow();
+            if let (Some(ui), Some(wid)) = (weak.upgrade(), wid) {
                 ui.global::<Logic>().invoke_maximize_window(wid.0 as i32);
             }
         }
@@ -1308,7 +1335,8 @@ fn main() -> anyhow::Result<()> {
         let weak = weak.clone();
         let focused = focused.clone();
         move || {
-            if let (Some(ui), Some(wid)) = (weak.upgrade(), *focused.borrow()) {
+            let wid = *focused.borrow();
+            if let (Some(ui), Some(wid)) = (weak.upgrade(), wid) {
                 ui.global::<Logic>().invoke_minimize_window(wid.0 as i32);
             }
         }
@@ -2580,5 +2608,101 @@ mod tests {
         assert!(a.x >= 0.0 && a.y >= 0.0 && a.x + a.w <= cw && a.y + a.h <= ch);
         // Successive windows cascade so they don't perfectly overlap.
         assert!(b.x > a.x && b.y > a.y);
+    }
+
+    // A WinMeta with the given content size hints (0 = unset), decorated.
+    fn meta_with_hints(min_w: i32, min_h: i32, max_w: i32, max_h: i32) -> WinMeta {
+        WinMeta { decorated: true, min_w, min_h, max_w, max_h, ..Default::default() }
+    }
+
+    #[test]
+    fn frame_bounds_unset_hints_are_floor_and_infinite() {
+        // No client hints: min is the global floor, max is unbounded.
+        let (min_w, min_h, max_w, max_h) = meta_with_hints(0, 0, 0, 0).frame_bounds();
+        assert_eq!((min_w, min_h), (MIN_WIN_W, MIN_WIN_H));
+        assert!(max_w.is_infinite() && max_h.is_infinite());
+    }
+
+    #[test]
+    fn frame_bounds_adds_title_bar_to_height_only() {
+        // A 400×300 content min/max becomes a frame min/max with the title bar
+        // added to the *height* axis only (width has no horizontal decoration).
+        let (min_w, min_h, max_w, max_h) = meta_with_hints(400, 300, 400, 300).frame_bounds();
+        assert_eq!(min_w, 400.0);
+        assert_eq!(max_w, 400.0);
+        assert_eq!(min_h, 300.0 + TITLE_BAR_H);
+        assert_eq!(max_h, 300.0 + TITLE_BAR_H);
+    }
+
+    #[test]
+    fn frame_bounds_undecorated_has_no_title_bar() {
+        let mut m = meta_with_hints(400, 300, 0, 0);
+        m.decorated = false;
+        let (_, min_h, _, _) = m.frame_bounds();
+        assert_eq!(min_h, 300.0); // no title bar added
+    }
+
+    #[test]
+    fn frame_bounds_keeps_max_at_least_min() {
+        // A client whose max is below the global floor still yields max ≥ min,
+        // so callers can clamp(min, max) without panicking.
+        let (min_w, min_h, max_w, max_h) = meta_with_hints(0, 0, 50, 40).frame_bounds();
+        assert_eq!((max_w, max_h), (min_w, min_h));
+        assert!(max_w >= min_w && max_h >= min_h);
+    }
+
+    #[test]
+    fn resize_right_and_bottom_keep_origin() {
+        let bounds = (MIN_WIN_W, MIN_WIN_H, f32::INFINITY, f32::INFINITY);
+        let mut g = WinGeom { x: 100.0, y: 50.0, w: 400.0, h: 300.0 };
+        g.resize_by(2 | 8, 60.0, 40.0, bounds); // drag right + bottom edges out
+        assert_eq!((g.x, g.y), (100.0, 50.0)); // origin unmoved
+        assert_eq!((g.w, g.h), (460.0, 340.0));
+    }
+
+    #[test]
+    fn resize_left_and_top_anchor_opposite_edge() {
+        let bounds = (MIN_WIN_W, MIN_WIN_H, f32::INFINITY, f32::INFINITY);
+        let mut g = WinGeom { x: 100.0, y: 50.0, w: 400.0, h: 300.0 };
+        let (right, bottom) = (g.x + g.w, g.y + g.h);
+        g.resize_by(1 | 4, 40.0, 30.0, bounds); // drag left + top edges inward
+        assert_eq!((g.w, g.h), (360.0, 270.0));
+        // The right/bottom edges stay put; the origin moved.
+        assert!((g.x + g.w - right).abs() < 0.01);
+        assert!((g.y + g.h - bottom).abs() < 0.01);
+    }
+
+    #[test]
+    fn resize_clamps_to_min_and_max_hints() {
+        let bounds = (200.0, 150.0, 600.0, 500.0);
+        // Shrinking past the minimum is clamped to the minimum.
+        let mut g = WinGeom { x: 0.0, y: 0.0, w: 300.0, h: 250.0 };
+        g.resize_by(2 | 8, -1000.0, -1000.0, bounds);
+        assert_eq!((g.w, g.h), (200.0, 150.0));
+        // Growing past the maximum is clamped to the maximum.
+        let mut g = WinGeom { x: 0.0, y: 0.0, w: 300.0, h: 250.0 };
+        g.resize_by(2 | 8, 1000.0, 1000.0, bounds);
+        assert_eq!((g.w, g.h), (600.0, 500.0));
+    }
+
+    #[test]
+    fn snap_geom_covers_halves_quarters_and_maximize() {
+        let (cw, ch) = (1000.0, 800.0);
+        assert_eq!(snap_geom(1, cw, ch), WinGeom { x: 0.0, y: 0.0, w: 500.0, h: 800.0 });
+        assert_eq!(snap_geom(2, cw, ch), WinGeom { x: 500.0, y: 0.0, w: 500.0, h: 800.0 });
+        assert_eq!(snap_geom(7, cw, ch), WinGeom { x: 500.0, y: 400.0, w: 500.0, h: 400.0 });
+        // Zone 3 (and any unknown zone) maximizes to the full area.
+        assert_eq!(snap_geom(3, cw, ch), WinGeom { x: 0.0, y: 0.0, w: cw, h: ch });
+    }
+
+    #[test]
+    fn maximized_geom_fills_or_centres_within_max() {
+        let (cw, ch) = (1000.0, 800.0);
+        // A resizable client fills the whole area, top-left anchored.
+        let g = maximized_geom(cw, ch, f32::INFINITY, f32::INFINITY);
+        assert_eq!(g, WinGeom { x: 0.0, y: 0.0, w: cw, h: ch });
+        // A capped client is sized to its max and centred.
+        let g = maximized_geom(cw, ch, 600.0, 400.0);
+        assert_eq!(g, WinGeom { x: 200.0, y: 200.0, w: 600.0, h: 400.0 });
     }
 }
