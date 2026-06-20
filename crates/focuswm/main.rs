@@ -59,6 +59,9 @@ struct WinMeta {
     /// Floating frame geometry in content-area logical px: top-left `(x, y)` and
     /// whole-frame size `(w, h)` (the title bar is the top `TITLE_BAR_H` of it).
     geom: WinGeom,
+    /// Geometry to restore to when unmaximizing/unsnapping (the frame from just
+    /// before the last maximize/snap), if any.
+    restore: Option<WinGeom>,
 }
 
 /// A floating window's frame rectangle, in content-area logical px.
@@ -1074,10 +1077,12 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Toggle a window's maximized state (tells the client + sizes it to output).
+    // Toggle a window's maximized state: fill the content area (saving the
+    // current frame to restore later), or restore the saved frame.
     ui.global::<Logic>().on_maximize_window({
         let cmd_tx = cmd_tx.clone();
         let tasks = tasks.clone();
+        let shared = shared.clone();
         let rebuild_windows = rebuild_windows.clone();
         let mark_active = mark_active.clone();
         move |id| {
@@ -1085,8 +1090,57 @@ fn main() -> anyhow::Result<()> {
             let wid = WindowId(id as u64);
             let maximized = !tasks.borrow().is_maximized(wid);
             tasks.borrow_mut().set_maximized(wid, maximized);
-            rebuild_windows();
+            {
+                let mut s = shared.borrow_mut();
+                let (cw, ch) = s.content;
+                if let Some(meta) = s.meta.get_mut(&wid.0) {
+                    if maximized {
+                        meta.restore = Some(meta.geom);
+                        meta.geom = WinGeom { x: 0.0, y: 0.0, w: cw, h: ch };
+                    } else {
+                        meta.geom = meta.restore.take().unwrap_or(meta.geom);
+                    }
+                    let (w, h) = meta.geom.content_size(meta.decorated);
+                    let _ = cmd_tx.send(Command::ResizeWindow { id: wid, width: w, height: h });
+                }
+            }
             let _ = cmd_tx.send(Command::SetMaximized { id: wid, maximized });
+            rebuild_windows();
+        }
+    });
+
+    // Snap a window to a screen region (1=left half, 2=right half, 3=maximize).
+    ui.global::<Logic>().on_snap_window({
+        let cmd_tx = cmd_tx.clone();
+        let tasks = tasks.clone();
+        let shared = shared.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let mark_active = mark_active.clone();
+        move |id, zone| {
+            mark_active();
+            let wid = WindowId(id as u64);
+            {
+                let mut s = shared.borrow_mut();
+                let (cw, ch) = s.content;
+                if let Some(meta) = s.meta.get_mut(&wid.0) {
+                    // Remember the pre-snap frame so a later restore brings it back.
+                    if meta.restore.is_none() {
+                        meta.restore = Some(meta.geom);
+                    }
+                    meta.geom = match zone {
+                        1 => WinGeom { x: 0.0, y: 0.0, w: cw / 2.0, h: ch },
+                        2 => WinGeom { x: cw / 2.0, y: 0.0, w: cw / 2.0, h: ch },
+                        _ => WinGeom { x: 0.0, y: 0.0, w: cw, h: ch },
+                    };
+                    let (w, h) = meta.geom.content_size(meta.decorated);
+                    let _ = cmd_tx.send(Command::ResizeWindow { id: wid, width: w, height: h });
+                }
+            }
+            // Top-edge snap is a maximize; half-screen snaps are not.
+            let maximized = zone == 3;
+            tasks.borrow_mut().set_maximized(wid, maximized);
+            let _ = cmd_tx.send(Command::SetMaximized { id: wid, maximized });
+            rebuild_windows();
         }
     });
 
