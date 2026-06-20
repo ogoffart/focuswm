@@ -82,6 +82,7 @@ impl CompositorHandler for FocusState {
             }
             let title = read_title(&root);
             let app_id = read_app_id(&root);
+            let (min_w, min_h, max_w, max_h) = read_size_hints(&root);
             let mut cache = std::mem::take(&mut self.surface_pixels);
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
@@ -103,6 +104,10 @@ impl CompositorHandler for FocusState {
                     title,
                     app_id,
                     decorated,
+                    min_w,
+                    min_h,
+                    max_w,
+                    max_h,
                 });
             }
             return;
@@ -181,6 +186,11 @@ impl CompositorHandler for FocusState {
                     title,
                     app_id,
                     decorated,
+                    // X11 size hints aren't plumbed through; leave unconstrained.
+                    min_w: 0,
+                    min_h: 0,
+                    max_w: 0,
+                    max_h: 0,
                 });
             }
             return;
@@ -334,6 +344,17 @@ fn read_app_id(surface: &WlSurface) -> String {
             .get::<XdgToplevelSurfaceData>()
             .and_then(|d| d.lock().unwrap().app_id.clone())
             .unwrap_or_default()
+    })
+}
+
+/// The client's `xdg_toplevel` min/max size hints `(min_w, min_h, max_w, max_h)`
+/// in surface logical px; 0 on an axis means unset (no constraint).
+fn read_size_hints(surface: &WlSurface) -> (i32, i32, i32, i32) {
+    use smithay::wayland::shell::xdg::SurfaceCachedState;
+    with_states(surface, |states| {
+        let mut guard = states.cached_state.get::<SurfaceCachedState>();
+        let s = guard.current();
+        (s.min_size.w, s.min_size.h, s.max_size.w, s.max_size.h)
     })
 }
 

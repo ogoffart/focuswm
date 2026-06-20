@@ -64,6 +64,12 @@ pub enum Event {
         title: String,
         app_id: String,
         decorated: bool,
+        /// Client size hints in surface (content) logical px; 0 = unset, i.e.
+        /// no minimum / no maximum on that axis.
+        min_w: i32,
+        min_h: i32,
+        max_w: i32,
+        max_h: i32,
     },
     /// A popup committed a frame, drawn at offset `(ox, oy)` from `parent`.
     PopupBuffer {

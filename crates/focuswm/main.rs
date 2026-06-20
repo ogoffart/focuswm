@@ -62,6 +62,27 @@ struct WinMeta {
     /// Geometry to restore to when unmaximizing/unsnapping (the frame from just
     /// before the last maximize/snap), if any.
     restore: Option<WinGeom>,
+    /// Client size hints for the content surface, in logical px (0 = unset).
+    /// Resizing clamps the frame so the content stays within these.
+    min_w: i32,
+    min_h: i32,
+    max_w: i32,
+    max_h: i32,
+}
+
+impl WinMeta {
+    /// Frame-size bounds `(min_w, min_h, max_w, max_h)` in logical px from the
+    /// client's content hints plus the title bar; `max` is `f32::INFINITY` when
+    /// the client set no maximum. Never below the global minimum, and `max` is
+    /// kept ≥ `min` so callers can `clamp` safely.
+    fn frame_bounds(&self) -> (f32, f32, f32, f32) {
+        let bar = if self.decorated { TITLE_BAR_H } else { 0.0 };
+        let min_w = (self.min_w as f32).max(MIN_WIN_W);
+        let min_h = (if self.min_h > 0 { self.min_h as f32 + bar } else { 0.0 }).max(MIN_WIN_H);
+        let max_w = if self.max_w > 0 { (self.max_w as f32).max(min_w) } else { f32::INFINITY };
+        let max_h = if self.max_h > 0 { (self.max_h as f32 + bar).max(min_h) } else { f32::INFINITY };
+        (min_w, min_h, max_w, max_h)
+    }
 }
 
 /// A floating window's frame rectangle, in content-area logical px.
@@ -1019,21 +1040,23 @@ fn main() -> anyhow::Result<()> {
             let mut s = shared.borrow_mut();
             let (g, decorated) = {
                 let Some(meta) = s.meta.get_mut(&id) else { return };
+                // Clamp to the client's min/max size hints (plus the global floor).
+                let (min_w, min_h, max_w, max_h) = meta.frame_bounds();
                 let mut g = meta.geom;
                 if edges & 2 != 0 {
-                    g.w = (g.w + dx).max(MIN_WIN_W);
+                    g.w = (g.w + dx).clamp(min_w, max_w);
                 }
                 if edges & 1 != 0 {
                     // Left edge: move the origin but keep the right edge anchored.
-                    let new_w = (g.w - dx).max(MIN_WIN_W);
+                    let new_w = (g.w - dx).clamp(min_w, max_w);
                     g.x += g.w - new_w;
                     g.w = new_w;
                 }
                 if edges & 8 != 0 {
-                    g.h = (g.h + dy).max(MIN_WIN_H);
+                    g.h = (g.h + dy).clamp(min_h, max_h);
                 }
                 if edges & 4 != 0 {
-                    let new_h = (g.h - dy).max(MIN_WIN_H);
+                    let new_h = (g.h - dy).clamp(min_h, max_h);
                     g.y += g.h - new_h;
                     g.h = new_h;
                 }
@@ -1332,9 +1355,17 @@ fn main() -> anyhow::Result<()> {
                         title,
                         app_id,
                         decorated,
+                        min_w,
+                        min_h,
+                        max_w,
+                        max_h,
                     } => {
                         let mut s = shared.borrow_mut();
                         let meta = s.meta.entry(id.0).or_default();
+                        meta.min_w = min_w;
+                        meta.min_h = min_h;
+                        meta.max_w = max_w;
+                        meta.max_h = max_h;
                         let mut decoration_changed = None;
                         if meta.title != title || meta.decorated != decorated {
                             if meta.decorated != decorated {
