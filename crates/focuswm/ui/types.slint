@@ -26,6 +26,10 @@ export struct WindowTile {
     height: length,
     // Whether the compositor should draw a server-side title bar.
     decorated: bool,
+    // Hidden from the content area (still listed in the sidebar to restore).
+    minimized: bool,
+    // The client has been told it is maximized.
+    maximized: bool,
 }
 
 // A client popup (menu, dropdown, tooltip), positioned in the content area.

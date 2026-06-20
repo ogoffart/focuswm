@@ -128,6 +128,9 @@ export global Logic {
     // Resize the floating window frame by a delta. `edges` is a bitmask of which
     // edges are being dragged: 1=left, 2=right, 4=top, 8=bottom.
     callback resize-window(int /* id */, int /* edges */, length /* dx */, length /* dy */);
+    // Toggle a window's minimized / maximized state.
+    callback minimize-window(int /* id */);
+    callback maximize-window(int /* id */);
     callback pointer-moved(int /* id */, length /* x */, length /* y */);
     callback pointer-button(int /* id */, length /* x */, length /* y */, int /* btn */, bool /* pressed */);
     callback key-event(string /* text */, bool /* ctrl */, bool /* alt */, bool /* shift */, bool /* pressed */);

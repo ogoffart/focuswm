@@ -389,6 +389,8 @@ fn main() -> anyhow::Result<()> {
                     width: geom.w,
                     height: geom.h,
                     decorated,
+                    minimized: list.is_minimized(*wid),
+                    maximized: list.is_maximized(*wid),
                 });
                 rows.insert(id, row);
             }
@@ -905,12 +907,18 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_focus_window({
         let cmd_tx = cmd_tx.clone();
         let focused = focused.clone();
+        let tasks = tasks.clone();
         let rebuild_windows = rebuild_windows.clone();
         let mark_active = mark_active.clone();
         move |id| {
             mark_active();
-            *focused.borrow_mut() = Some(WindowId(id as u64));
-            let _ = cmd_tx.send(Command::FocusWindow(WindowId(id as u64)));
+            let wid = WindowId(id as u64);
+            // Focusing a minimized window restores it.
+            if tasks.borrow().is_minimized(wid) {
+                tasks.borrow_mut().set_minimized(wid, false);
+            }
+            *focused.borrow_mut() = Some(wid);
+            let _ = cmd_tx.send(Command::FocusWindow(wid));
             rebuild_windows();
         }
     });
@@ -993,6 +1001,41 @@ fn main() -> anyhow::Result<()> {
                     windows_model.set_row_data(row, t);
                 }
             }
+        }
+    });
+
+    // Toggle a window's minimized state (hidden from the content area, still
+    // listed in the sidebar). Restoring also raises/focuses it.
+    ui.global::<Logic>().on_minimize_window({
+        let cmd_tx = cmd_tx.clone();
+        let tasks = tasks.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let mark_active = mark_active.clone();
+        move |id| {
+            mark_active();
+            let wid = WindowId(id as u64);
+            let now_minimized = !tasks.borrow().is_minimized(wid);
+            tasks.borrow_mut().set_minimized(wid, now_minimized);
+            rebuild_windows();
+            if !now_minimized {
+                let _ = cmd_tx.send(Command::FocusWindow(wid));
+            }
+        }
+    });
+
+    // Toggle a window's maximized state (tells the client + sizes it to output).
+    ui.global::<Logic>().on_maximize_window({
+        let cmd_tx = cmd_tx.clone();
+        let tasks = tasks.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let mark_active = mark_active.clone();
+        move |id| {
+            mark_active();
+            let wid = WindowId(id as u64);
+            let maximized = !tasks.borrow().is_maximized(wid);
+            tasks.borrow_mut().set_maximized(wid, maximized);
+            rebuild_windows();
+            let _ = cmd_tx.send(Command::SetMaximized { id: wid, maximized });
         }
     });
 

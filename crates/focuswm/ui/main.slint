@@ -269,9 +269,11 @@ export component Desktop inherits Window {
 
             // Client windows of the active task as floating frames (last on
             // top). Geometry is host-driven; drag the title bar to move and the
-            // edge grips to resize.
+            // edge grips to resize. Minimized windows stay in the sidebar list
+            // but aren't shown here.
             for tile[i] in AppData.windows: WindowView {
                 tile: tile;
+                visible: !tile.minimized;
                 x: tile.x;
                 y: tile.y;
                 width: tile.width;

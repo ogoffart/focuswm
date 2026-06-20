@@ -33,6 +33,7 @@ impl FocusState {
             Command::PointerAxis { id, dx, dy } => self.pointer_axis(id, dx, dy),
             Command::Key { keycode, pressed } => self.key_input(keycode, pressed),
             Command::ResizeWindow { id, width, height } => self.resize_window(id, width, height),
+            Command::SetMaximized { id, maximized } => self.set_window_maximized(id, maximized),
             Command::ResizeOutput { width, height } => self.resize_output(width, height),
             Command::DismissPopups => {
                 for entry in self.popups.values() {
@@ -183,6 +184,27 @@ impl FocusState {
             let mut geo = entry.surface.geometry();
             geo.size = (width.max(1), height.max(1)).into();
             let _ = entry.surface.configure(geo);
+        }
+    }
+
+    /// Tell a window whether it is maximized: set/clear the xdg `Maximized`
+    /// state, sizing it to the output when maximized.
+    fn set_window_maximized(&mut self, id: WindowId, maximized: bool) {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+        let size = self.current_output_size;
+        if let Some(entry) = self.windows.values().find(|e| e.id == id) {
+            let toplevel = entry.toplevel.clone();
+            toplevel.with_pending_state(|state| {
+                if maximized {
+                    state.states.set(xdg_toplevel::State::Maximized);
+                    state.size = Some((size.0.max(1), size.1.max(1)).into());
+                } else {
+                    state.states.unset(xdg_toplevel::State::Maximized);
+                }
+            });
+            toplevel.send_configure();
+        } else if let Some(entry) = self.x11_windows.values().find(|e| e.id == id) {
+            let _ = entry.surface.set_maximized(maximized);
         }
     }
 

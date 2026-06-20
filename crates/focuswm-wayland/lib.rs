@@ -231,6 +231,9 @@ pub enum Command {
         width: i32,
         height: i32,
     },
+    /// Tell a window whether it is maximized (sets the xdg `Maximized` state and
+    /// sizes it to the output).
+    SetMaximized { id: WindowId, maximized: bool },
     /// The output (host window) was resized.
     ResizeOutput { width: i32, height: i32 },
     /// Dismiss all open popups (e.g. a click landed outside them).

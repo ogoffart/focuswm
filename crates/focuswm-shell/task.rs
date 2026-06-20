@@ -9,7 +9,7 @@
 //! clock: the binary crate passes `Instant`-derived seconds, tests pass fixed
 //! values.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +83,13 @@ pub struct TaskList {
     /// desktop 0.
     #[serde(default, skip)]
     active_since: Option<u64>,
+    /// Windows the user has minimized (hidden from the content area but still
+    /// listed in the sidebar so they can be restored).
+    #[serde(default, skip)]
+    minimized: HashSet<WindowId>,
+    /// Windows the user has maximized (the client has been told it is maximized).
+    #[serde(default, skip)]
+    maximized: HashSet<WindowId>,
     /// Next task id to hand out.
     #[serde(default)]
     next_id: u64,
@@ -298,6 +305,36 @@ impl TaskList {
     /// Forget a window that has been unmapped.
     pub fn remove_window(&mut self, window: WindowId) {
         self.window_task.remove(&window);
+        self.minimized.remove(&window);
+        self.maximized.remove(&window);
+    }
+
+    /// Whether a window is minimized (hidden from the content area).
+    pub fn is_minimized(&self, window: WindowId) -> bool {
+        self.minimized.contains(&window)
+    }
+
+    /// Set a window's minimized state.
+    pub fn set_minimized(&mut self, window: WindowId, minimized: bool) {
+        if minimized {
+            self.minimized.insert(window);
+        } else {
+            self.minimized.remove(&window);
+        }
+    }
+
+    /// Whether a window is maximized (the client has been told so).
+    pub fn is_maximized(&self, window: WindowId) -> bool {
+        self.maximized.contains(&window)
+    }
+
+    /// Set a window's maximized state.
+    pub fn set_maximized(&mut self, window: WindowId, maximized: bool) {
+        if maximized {
+            self.maximized.insert(window);
+        } else {
+            self.maximized.remove(&window);
+        }
     }
 
     /// The task a window belongs to, or `None` if it's on desktop 0 or unknown.
@@ -610,6 +647,26 @@ mod tests {
         assert_eq!(t.color, "#ffffff");
         // Unknown id is a no-op.
         list.set_task_props(TaskId(999), "x", "y", "z");
+    }
+
+    #[test]
+    fn minimized_and_maximized_state_tracks_and_clears_on_unmap() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.set_active(a, 0);
+        list.assign_window(WindowId(1));
+        assert!(!list.is_minimized(WindowId(1)));
+        list.set_minimized(WindowId(1), true);
+        list.set_maximized(WindowId(1), true);
+        assert!(list.is_minimized(WindowId(1)));
+        assert!(list.is_maximized(WindowId(1)));
+        list.set_minimized(WindowId(1), false);
+        assert!(!list.is_minimized(WindowId(1)));
+        // Unmapping the window clears any leftover state.
+        list.set_minimized(WindowId(1), true);
+        list.remove_window(WindowId(1));
+        assert!(!list.is_minimized(WindowId(1)));
+        assert!(!list.is_maximized(WindowId(1)));
     }
 
     #[test]
