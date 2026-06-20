@@ -1162,6 +1162,7 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_minimize_window({
         let cmd_tx = cmd_tx.clone();
         let tasks = tasks.clone();
+        let focused = focused.clone();
         let rebuild_windows = rebuild_windows.clone();
         let mark_active = mark_active.clone();
         move |id| {
@@ -1169,10 +1170,27 @@ fn main() -> anyhow::Result<()> {
             let wid = WindowId(id as u64);
             let now_minimized = !tasks.borrow().is_minimized(wid);
             tasks.borrow_mut().set_minimized(wid, now_minimized);
-            rebuild_windows();
-            if !now_minimized {
+            if now_minimized {
+                // If we just minimized the focused window, move focus to another
+                // visible window — otherwise the "minimize" shortcut would simply
+                // toggle this same window back on the next press.
+                if *focused.borrow() == Some(wid) {
+                    let next = {
+                        let list = tasks.borrow();
+                        list.active_windows()
+                            .into_iter()
+                            .find(|w| *w != wid && !list.is_minimized(*w))
+                    };
+                    *focused.borrow_mut() = next;
+                    if let Some(w) = next {
+                        let _ = cmd_tx.send(Command::FocusWindow(w));
+                    }
+                }
+            } else {
+                *focused.borrow_mut() = Some(wid);
                 let _ = cmd_tx.send(Command::FocusWindow(wid));
             }
+            rebuild_windows();
         }
     });
 
@@ -1195,7 +1213,14 @@ fn main() -> anyhow::Result<()> {
                 if let Some(meta) = s.meta.get_mut(&wid.0) {
                     if maximized {
                         meta.restore = Some(meta.geom);
-                        meta.geom = WinGeom { x: 0.0, y: 0.0, w: cw, h: ch };
+                        // Honour the client's max size: a non-resizable window
+                        // (e.g. a fixed X11 dialog) can't fill the area, so size
+                        // it to its cap and centre it instead of leaving the
+                        // frame larger than what the client renders.
+                        let (_, _, max_w, max_h) = meta.frame_bounds();
+                        let w = cw.min(max_w);
+                        let h = ch.min(max_h);
+                        meta.geom = WinGeom { x: (cw - w) / 2.0, y: (ch - h) / 2.0, w, h };
                     } else {
                         meta.geom = meta.restore.take().unwrap_or(meta.geom);
                     }
@@ -1236,6 +1261,10 @@ fn main() -> anyhow::Result<()> {
                         7 => WinGeom { x: hw, y: hh, w: hw, h: hh },          // bottom-right
                         _ => WinGeom { x: 0.0, y: 0.0, w: cw, h: ch },        // maximize
                     };
+                    // Don't ask a non-resizable client for more than its max size.
+                    let (_, _, max_w, max_h) = meta.frame_bounds();
+                    meta.geom.w = meta.geom.w.min(max_w);
+                    meta.geom.h = meta.geom.h.min(max_h);
                     let (w, h) = meta.geom.content_size(meta.decorated);
                     let _ = cmd_tx.send(Command::ResizeWindow { id: wid, width: w, height: h });
                 }
@@ -1383,8 +1412,14 @@ fn main() -> anyhow::Result<()> {
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
         // When client damage (a new buffer) last arrived; we keep compositing for
-        // a short tail afterwards, then let the window idle.
-        let last_damage = std::cell::Cell::new(Instant::now() - Duration::from_secs(1));
+        // a short tail afterwards, then let the window idle. Initialised to a
+        // second ago so the desktop idles immediately — via `checked_sub` so it
+        // can't panic when the monotonic clock is still within 1s of its epoch.
+        let last_damage = std::cell::Cell::new(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        );
         let github_events = github.as_ref().map(|g| g.events.clone());
         let issue_results_model = issue_results_model.clone();
         let pending_link = pending_link.clone();
