@@ -70,10 +70,6 @@ pub struct FocusState {
 
     /// XWayland window manager (created once XWayland signals it is ready).
     pub xwm: Option<smithay::xwayland::X11Wm>,
-    /// XWayland's X11 display number once it is ready (e.g. `Some(1)` for `:1`).
-    /// Until this is set, X11 clients must not be launched or they connect to
-    /// the X server of the session focuswm itself runs in.
-    pub x_display: Option<u32>,
     /// xwayland-shell global, associating X11 windows with `wl_surface`s.
     pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
     /// Mapped X11 windows, keyed by their associated `wl_surface`.
