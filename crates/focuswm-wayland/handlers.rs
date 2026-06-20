@@ -259,6 +259,11 @@ fn composite_tree(
                     if let Ok(Some(frame)) = shm_with_buffer_contents(&buffer, read_shm) {
                         cache.insert(surface.clone(), frame);
                     }
+                    // We copied the pixels into an owned buffer above, so the
+                    // client's shm buffer can be reused immediately. Without this
+                    // release the client's buffer pool drains ("all buffers are
+                    // held by the server") and apps like weston-terminal exit.
+                    buffer.release();
                 }
                 Some(BufferAssignment::Removed) => {
                     cache.remove(surface);
