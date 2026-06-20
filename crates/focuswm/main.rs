@@ -1236,6 +1236,20 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Composed/typed text from the focused window's input method: type it
+    // verbatim into the client (handles accents, AltGr layers and dead-key
+    // results that only surface through the platform input method).
+    ui.global::<Logic>().on_text_input({
+        let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
+        move |text| {
+            mark_active();
+            if !text.is_empty() {
+                let _ = cmd_tx.send(Command::TypeText(text.to_string()));
+            }
+        }
+    });
+
     // Start on desktop 0 (the scratch desktop); the user picks a task to begin
     // time tracking.
     tasks.borrow_mut().set_date(&today());

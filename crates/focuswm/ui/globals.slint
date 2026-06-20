@@ -144,4 +144,7 @@ export global Logic {
     callback pointer-moved(int /* id */, length /* x */, length /* y */);
     callback pointer-button(int /* id */, length /* x */, length /* y */, int /* btn */, bool /* pressed */);
     callback key-event(string /* text */, bool /* ctrl */, bool /* alt */, bool /* shift */, bool /* pressed */);
+    // Typed/composed text from the focused window's input method (accents,
+    // AltGr, dead-key results), to type verbatim into the client.
+    callback text-input(string /* text */);
 }

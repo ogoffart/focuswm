@@ -229,13 +229,42 @@ component WindowView inherits Rectangle {
             }
 
             fs := FocusScope {
-                key-pressed(e) => {
-                    Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, true);
-                    accept
+                // Focus the hidden text input so the platform input method is
+                // enabled and dead-key / compose / IME sequences are delivered.
+                forward-focus: ime;
+
+                // Intercept keys *before* the text input (capture fires for an
+                // ancestor even while a descendant holds focus). Control and
+                // navigation keys, and Ctrl[-Alt] shortcuts, are forwarded as
+                // keycodes; everything else falls through to `ime`, which turns
+                // it into committed text (including composed dead keys).
+                capture-key-pressed(e) => {
+                    if (root.is-control-key(e.text) || e.modifiers.control) {
+                        Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, true);
+                        return accept;
+                    }
+                    return reject;
                 }
-                key-released(e) => {
-                    Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, false);
-                    accept
+                capture-key-released(e) => {
+                    if (root.is-control-key(e.text) || e.modifiers.control) {
+                        Logic.key-event(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, false);
+                        return accept;
+                    }
+                    return reject;
+                }
+
+                ime := TextInput {
+                    width: 0px;
+                    height: 0px;
+                    // Typed + composed text (accents, AltGr, dead-key results via
+                    // the input method) lands here; forward it to the client and
+                    // clear so the next keystroke starts fresh.
+                    edited => {
+                        if (self.text != "") {
+                            Logic.text-input(self.text);
+                            self.text = "";
+                        }
+                    }
                 }
 
                 ta := TouchArea {
@@ -301,6 +330,20 @@ component WindowView inherits Rectangle {
             : b == PointerEventButton.right ? 2
             : b == PointerEventButton.middle ? 3
             : 0
+    }
+
+    // Keys that must be forwarded as keycodes rather than typed as text: control
+    // and navigation keys. (Space is intentionally *not* here — it goes through
+    // the text input so "dead-key + space" composes, and a plain space still
+    // types a space.)
+    pure function is-control-key(t: string) -> bool {
+        t == Key.Return || t == Key.Tab || t == Key.Backspace || t == Key.Escape
+            || t == Key.Delete || t == Key.LeftArrow || t == Key.RightArrow
+            || t == Key.UpArrow || t == Key.DownArrow || t == Key.Home || t == Key.End
+            || t == Key.PageUp || t == Key.PageDown || t == Key.Insert
+            || t == Key.F1 || t == Key.F2 || t == Key.F3 || t == Key.F4
+            || t == Key.F5 || t == Key.F6 || t == Key.F7 || t == Key.F8
+            || t == Key.F9 || t == Key.F10 || t == Key.F11 || t == Key.F12
     }
 }
 
