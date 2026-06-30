@@ -115,6 +115,23 @@ pub enum Event {
     },
     /// The output was resized (echoed back after a `Command::ResizeOutput`).
     OutputResized { width: i32, height: i32 },
+    /// A client started an interactive drag-and-drop. The UI should route
+    /// pointer motion globally (to whichever window is under the cursor) until
+    /// the matching `DragEnded`, so the drag can cross between applications.
+    DragStarted,
+    /// The drag-and-drop ended (drop or cancel); stop global routing and hide
+    /// the drag icon.
+    DragEnded,
+    /// The drag icon committed a frame: tightly-packed RGBA8 of `width`x`height`,
+    /// to be drawn following the cursor. `hot_x`/`hot_y` is the cursor hotspot
+    /// within the image (logical px).
+    DragIcon {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        hot_x: i32,
+        hot_y: i32,
+    },
 }
 
 /// One plane of a dmabuf: an owned file descriptor plus its offset and stride.
@@ -211,6 +228,17 @@ impl std::fmt::Debug for Event {
                 .field("width", width)
                 .field("height", height)
                 .finish(),
+            Event::DragStarted => f.debug_struct("DragStarted").finish(),
+            Event::DragEnded => f.debug_struct("DragEnded").finish(),
+            Event::DragIcon {
+                width, height, hot_x, hot_y, ..
+            } => f
+                .debug_struct("DragIcon")
+                .field("width", width)
+                .field("height", height)
+                .field("hot_x", hot_x)
+                .field("hot_y", hot_y)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -367,6 +395,7 @@ pub fn run(
         pending_callbacks: Vec::new(),
         events: events.clone(),
         text_input: Default::default(),
+        dnd_icon: None,
     };
 
     // Install a keymap pre-loaded with common Unicode characters before any

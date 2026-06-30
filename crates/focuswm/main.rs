@@ -157,6 +157,19 @@ fn snap_geom(zone: i32, cw: f32, ch: f32) -> WinGeom {
     }
 }
 
+/// If `(gx, gy)` (content-area coords) falls within a window's *content* region
+/// — the frame minus the title bar when decorated — the surface-local
+/// coordinates within it, else `None`. Used to hit-test drag-and-drop targets.
+fn content_hit(geom: WinGeom, decorated: bool, gx: f32, gy: f32) -> Option<(f32, f32)> {
+    let bar = if decorated { TITLE_BAR_H } else { 0.0 };
+    let (cx, cy, cw, ch) = (geom.x, geom.y + bar, geom.w, geom.h - bar);
+    if gx >= cx && gx < cx + cw && gy >= cy && gy < cy + ch {
+        Some((gx - cx, gy - cy))
+    } else {
+        None
+    }
+}
+
 /// The frame for a maximized window in a `cw`×`ch` content area, capped at the
 /// client's `max_w`/`max_h` (so a non-resizable client doesn't get a frame
 /// bigger than it renders into) and centred within the area.
@@ -1342,6 +1355,93 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // The topmost non-minimized window whose *content* area (below the title
+    // bar) contains a point in content coordinates, with the surface-local
+    // coordinates within it. Used to re-target drag-and-drop across windows.
+    let window_under: Rc<dyn Fn(f32, f32) -> Option<(WindowId, f32, f32)>> = {
+        let tasks = tasks.clone();
+        let shared = shared.clone();
+        let focused = focused.clone();
+        Rc::new(move |gx, gy| {
+            let list = tasks.borrow();
+            // Same stacking as `rebuild_windows`: active order, focused on top.
+            let mut order = list.active_windows();
+            if let Some(f) = *focused.borrow() {
+                if let Some(pos) = order.iter().position(|w| *w == f) {
+                    let w = order.remove(pos);
+                    order.push(w);
+                }
+            }
+            let s = shared.borrow();
+            for wid in order.iter().rev() {
+                if list.is_minimized(*wid) {
+                    continue;
+                }
+                let Some(m) = s.meta.get(&wid.0) else { continue };
+                if let Some((lx, ly)) = content_hit(m.geom, m.decorated, gx, gy) {
+                    return Some((*wid, lx, ly));
+                }
+            }
+            None
+        })
+    };
+
+    // Drag-and-drop motion: position the drag icon at the cursor and forward
+    // surface-local motion to the window under it, so the Wayland DnD grab sends
+    // its offer to that surface (this is what lets a drag cross applications).
+    ui.global::<Logic>().on_dnd_motion({
+        let cmd_tx = cmd_tx.clone();
+        let weak = weak.clone();
+        let window_under = window_under.clone();
+        let mark_active = mark_active.clone();
+        move |gx, gy| {
+            mark_active();
+            if let Some(ui) = weak.upgrade() {
+                let ad = ui.global::<AppData>();
+                ad.set_dnd_x(gx);
+                ad.set_dnd_y(gy);
+            }
+            if let Some((target, lx, ly)) = window_under(gx, gy) {
+                let _ = cmd_tx.send(Command::PointerMotion {
+                    id: target,
+                    x: lx as f64,
+                    y: ly as f64,
+                });
+            }
+        }
+    });
+
+    // Drag-and-drop release: do a final motion to the drop target, then release
+    // the button so the grab performs the drop. With no window under the cursor,
+    // release on the origin window to end the grab (the drop is cancelled).
+    ui.global::<Logic>().on_dnd_drop({
+        let cmd_tx = cmd_tx.clone();
+        let window_under = window_under.clone();
+        let mark_active = mark_active.clone();
+        move |origin, gx, gy, btn| {
+            mark_active();
+            let button = evdev_button(btn);
+            if let Some((target, lx, ly)) = window_under(gx, gy) {
+                let _ = cmd_tx.send(Command::PointerMotion {
+                    id: target,
+                    x: lx as f64,
+                    y: ly as f64,
+                });
+                let _ = cmd_tx.send(Command::PointerButton {
+                    id: target,
+                    button,
+                    pressed: false,
+                });
+            } else {
+                let _ = cmd_tx.send(Command::PointerButton {
+                    id: WindowId(origin as u64),
+                    button,
+                    pressed: false,
+                });
+            }
+        }
+    });
+
     ui.global::<Logic>().on_pointer_moved({
         let cmd_tx = cmd_tx.clone();
         let mark_active = mark_active.clone();
@@ -1730,6 +1830,34 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                     Event::OutputResized { .. } => {}
+                    Event::DragStarted => {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.global::<AppData>().set_dnd_active(true);
+                        }
+                    }
+                    Event::DragEnded => {
+                        if let Some(ui) = weak.upgrade() {
+                            let ad = ui.global::<AppData>();
+                            ad.set_dnd_active(false);
+                            ad.set_dnd_w(0.0);
+                            ad.set_dnd_h(0.0);
+                            ad.set_dnd_icon(slint::Image::default());
+                        }
+                    }
+                    Event::DragIcon {
+                        width,
+                        height,
+                        pixels,
+                        ..
+                    } => {
+                        if let Some(ui) = weak.upgrade() {
+                            let img = rgba_to_image(width, height, &pixels);
+                            let ad = ui.global::<AppData>();
+                            ad.set_dnd_icon(img);
+                            ad.set_dnd_w(width as f32);
+                            ad.set_dnd_h(height as f32);
+                        }
+                    }
                 }
             }
             if dirty_windows {
@@ -2693,6 +2821,24 @@ mod tests {
         assert_eq!(snap_geom(7, cw, ch), WinGeom { x: 500.0, y: 400.0, w: 500.0, h: 400.0 });
         // Zone 3 (and any unknown zone) maximizes to the full area.
         assert_eq!(snap_geom(3, cw, ch), WinGeom { x: 0.0, y: 0.0, w: cw, h: ch });
+    }
+
+    #[test]
+    fn content_hit_excludes_title_bar_and_returns_local_coords() {
+        let g = WinGeom { x: 100.0, y: 50.0, w: 400.0, h: 300.0 };
+        // Decorated: the title bar (top TITLE_BAR_H) is not part of the content.
+        assert_eq!(content_hit(g, true, 110.0, 55.0), None); // over the title bar
+        // Just below the title bar maps to surface-local (10, 0).
+        assert_eq!(content_hit(g, true, 110.0, 50.0 + TITLE_BAR_H), Some((10.0, 0.0)));
+        // A point well inside the content maps relative to the content origin.
+        assert_eq!(
+            content_hit(g, true, 300.0, 200.0),
+            Some((200.0, 200.0 - 50.0 - TITLE_BAR_H))
+        );
+        // Outside the frame entirely.
+        assert_eq!(content_hit(g, true, 600.0, 200.0), None);
+        // Undecorated: the whole frame is content, so the top-left is (0, 0).
+        assert_eq!(content_hit(g, false, 100.0, 50.0), Some((0.0, 0.0)));
     }
 
     #[test]

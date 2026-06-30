@@ -69,6 +69,25 @@ impl CompositorHandler for FocusState {
         let root = root_surface(surface);
         let mut callbacks = Vec::new();
 
+        // Drag-and-drop icon? Composite it and hand the UI the frame to draw
+        // following the cursor (it's not a window/popup/layer/X11 surface).
+        if self.dnd_icon.as_ref() == Some(&root) {
+            let mut cache = std::mem::take(&mut self.surface_pixels);
+            let buffer = composite_tree(&root, &mut cache, &mut callbacks);
+            self.surface_pixels = cache;
+            self.pending_callbacks.append(&mut callbacks);
+            if let Some((width, height, pixels)) = buffer {
+                let _ = self.events.send(Event::DragIcon {
+                    width,
+                    height,
+                    pixels,
+                    hot_x: 0,
+                    hot_y: 0,
+                });
+            }
+            return;
+        }
+
         // Toplevel window?
         if let Some(entry) = self.windows.get(&root) {
             let (id, decorated) = (entry.id, entry.decorated);
@@ -780,7 +799,34 @@ impl DataDeviceHandler for FocusState {
     }
 }
 
-impl ClientDndGrabHandler for FocusState {}
+impl ClientDndGrabHandler for FocusState {
+    fn started(
+        &mut self,
+        _source: Option<smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: smithay::input::Seat<Self>,
+    ) {
+        // Remember the icon surface so its commits get composited and drawn
+        // following the cursor; tell the UI to route motion globally so the
+        // drag can cross between application windows.
+        self.dnd_icon = icon;
+        let _ = self.events.send(Event::DragStarted);
+    }
+
+    fn dropped(
+        &mut self,
+        _target: Option<WlSurface>,
+        _validated: bool,
+        _seat: smithay::input::Seat<Self>,
+    ) {
+        // Drop the icon's cached pixels along with the reference; a fresh drag
+        // brings a fresh icon surface.
+        if let Some(icon) = self.dnd_icon.take() {
+            self.surface_pixels.remove(&icon);
+        }
+        let _ = self.events.send(Event::DragEnded);
+    }
+}
 impl ServerDndGrabHandler for FocusState {}
 
 impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler for FocusState {

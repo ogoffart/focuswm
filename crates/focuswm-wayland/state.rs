@@ -93,6 +93,10 @@ pub struct FocusState {
     /// Builds keymaps on the fly so the focused client can receive arbitrary
     /// composed Unicode (accents, AltGr, dead keys) regardless of layout.
     pub text_input: crate::input::TextInput,
+
+    /// The drag icon surface of an in-progress client drag-and-drop, if the
+    /// client supplied one. Composited following the cursor while set.
+    pub dnd_icon: Option<WlSurface>,
 }
 
 /// A tracked layer-shell surface (panel, bar, wallpaper, notification).

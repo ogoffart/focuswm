@@ -95,6 +95,12 @@ component WindowView inherits Rectangle {
     // edge-snap (maximize / half-screen) preview.
     callback snap-preview(length /* gx */, length /* gy */);
     callback snap-drop(int /* id */, length /* gx */, length /* gy */);
+    // Bubbled while a client drag-and-drop is in progress: report the cursor in
+    // absolute (window) coordinates so the desktop can re-target the window
+    // under it. `dnd-up` also carries the released button and this window's id
+    // (the fallback drop target when the cursor is over no window).
+    callback dnd-move(length /* ax */, length /* ay */);
+    callback dnd-up(int /* origin */, length /* ax */, length /* ay */, int /* btn */);
 
     forward-focus: fs;
 
@@ -289,6 +295,14 @@ component WindowView inherits Rectangle {
                             // Clear any stale move flag from a previous drag.
                             AppData.moving-window = -1;
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), true);
+                        } else if (e.kind == PointerEventKind.up && AppData.dnd-active) {
+                            // A client drag-and-drop is in progress: drop on the
+                            // window under the cursor (or this one as fallback).
+                            root.dnd-up(tile.id, ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y, root.btn-code(e.button));
+                        } else if (e.kind == PointerEventKind.move && AppData.dnd-active) {
+                            // Route motion globally so the offer follows the
+                            // cursor across application windows, not just this one.
+                            root.dnd-move(ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y);
                         } else if e.kind == PointerEventKind.up {
                             // If this was a client-side-decoration move drag,
                             // snap into the zone under the cursor on release.
@@ -485,6 +499,17 @@ export component Desktop inherits Window {
                     }
                     root.snap-zone = 0;
                 }
+                // Convert absolute (window) coordinates to content coordinates
+                // for the host's hit-test, matching `snap-zone-at`.
+                dnd-move(ax, ay) => {
+                    Logic.dnd-motion(ax - windows-area.absolute-position.x,
+                                     ay - windows-area.absolute-position.y);
+                }
+                dnd-up(origin, ax, ay, btn) => {
+                    Logic.dnd-drop(origin,
+                                   ax - windows-area.absolute-position.x,
+                                   ay - windows-area.absolute-position.y, btn);
+                }
             }
 
             // wlr-layer-shell surfaces (panels, notifications, launchers) above
@@ -498,6 +523,17 @@ export component Desktop inherits Window {
             for p[i] in AppData.popups: ClientSurface {
                 id: p.id; texture: p.texture;
                 x: p.x; y: p.y; width: p.width; height: p.height;
+            }
+
+            // Drag-and-drop icon, drawn following the cursor on top of every
+            // window while a client drag is in progress.
+            if AppData.dnd-active && AppData.dnd-w > 0px: Image {
+                source: AppData.dnd-icon;
+                x: AppData.dnd-x;
+                y: AppData.dnd-y;
+                width: AppData.dnd-w;
+                height: AppData.dnd-h;
+                image-fit: fill;
             }
 
             // Edge-snap preview: shown while dragging a window's title bar near
