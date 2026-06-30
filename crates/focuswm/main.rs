@@ -1535,6 +1535,7 @@ fn main() -> anyhow::Result<()> {
         let dbus_daemon = dbus_daemon.clone();
         let rebuild_windows = rebuild_windows.clone();
         let refresh_tasks = refresh_tasks.clone();
+        let windows_model = windows_model.clone();
         let popups_model = popups_model.clone();
         let layers_model = layers_model.clone();
         let toasts = toasts.clone();
@@ -1664,13 +1665,20 @@ fn main() -> anyhow::Result<()> {
                         meta.max_w = max_w;
                         meta.max_h = max_h;
                         let mut decoration_changed = None;
-                        if meta.title != title || meta.decorated != decorated {
-                            if meta.decorated != decorated {
-                                decoration_changed = Some(meta.geom);
-                            }
-                            meta.title = title;
+                        if meta.decorated != decorated {
+                            decoration_changed = Some(meta.geom);
                             meta.decorated = decorated;
                             dirty_windows = true;
+                        }
+                        // A title-only change must NOT rebuild the window model:
+                        // `set_vec` recreates every WindowView (and its focused
+                        // FocusScope), so keyboard focus would be lost on every
+                        // title update — e.g. each shell prompt re-sets the
+                        // terminal title, stealing focus after every command.
+                        // Patch the affected row in place instead.
+                        let title_changed = meta.title != title;
+                        if title_changed {
+                            meta.title = title.clone();
                         }
                         meta.app_id = app_id;
                         s.pending.insert(
@@ -1691,6 +1699,16 @@ fn main() -> anyhow::Result<()> {
                         // has a row.
                         if tasks.borrow().is_visible(id) && !s.rows.contains_key(&id.0) {
                             dirty_windows = true;
+                        }
+                        // Apply a title-only change in place (unless a rebuild is
+                        // already happening this tick for another reason).
+                        if title_changed && !dirty_windows {
+                            if let Some(&row) = s.rows.get(&id.0) {
+                                if let Some(mut t) = windows_model.row_data(row) {
+                                    t.title = title.into();
+                                    windows_model.set_row_data(row, t);
+                                }
+                            }
                         }
                     }
                     Event::WindowDmabuf {
