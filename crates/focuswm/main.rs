@@ -1633,6 +1633,16 @@ fn main() -> anyhow::Result<()> {
                             ui.global::<AppData>().set_moving_window(id.0 as i32);
                         }
                     }
+                    Event::MinimizeRequested(id) => {
+                        // A client-side-decorated window (e.g. GNOME Terminal's
+                        // header-bar button) asked to be minimized. Apply the same
+                        // logic as the server-side minimize button. The window is
+                        // visible when its button is clicked, so the toggle
+                        // minimizes it.
+                        if let Some(ui) = weak.upgrade() {
+                            ui.global::<Logic>().invoke_minimize_window(id.0 as i32);
+                        }
+                    }
                     Event::WindowRemoved(id) => {
                         tasks.borrow_mut().remove_window(id);
                         let mut s = shared.borrow_mut();

@@ -500,6 +500,15 @@ impl XdgShellHandler for FocusState {
         surface.send_configure();
     }
 
+    // A client-side-decorated client (e.g. GTK's header-bar minimize button)
+    // asked to be minimized. focuswm owns minimize state on the UI side, so hand
+    // the request off to the UI to apply.
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(entry) = self.windows.get(surface.wl_surface()) {
+            let _ = self.events.send(Event::MinimizeRequested(entry.id));
+        }
+    }
+
     fn fullscreen_request(
         &mut self,
         surface: ToplevelSurface,
