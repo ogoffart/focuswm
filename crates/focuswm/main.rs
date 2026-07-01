@@ -157,6 +157,30 @@ fn snap_geom(zone: i32, cw: f32, ch: f32) -> WinGeom {
     }
 }
 
+/// Clamp a frame's size to the client's own min/max *content*-size hints (0 =
+/// unset on that axis), adding the title bar to the height bounds when
+/// decorated; the position is left unchanged. Unlike [`WinMeta::frame_bounds`]
+/// this applies no global floor, so a client that declares a small fixed size is
+/// honored (its frame shrinks to match what it draws rather than being forced to
+/// the minimum floating size).
+fn clamp_to_client_hints(
+    mut geom: WinGeom,
+    decorated: bool,
+    min_w: i32,
+    min_h: i32,
+    max_w: i32,
+    max_h: i32,
+) -> WinGeom {
+    let bar = if decorated { TITLE_BAR_H } else { 0.0 };
+    let cmin_w = if min_w > 0 { min_w as f32 } else { 0.0 };
+    let cmin_h = if min_h > 0 { min_h as f32 + bar } else { 0.0 };
+    let cmax_w = if max_w > 0 { (max_w as f32).max(cmin_w) } else { f32::INFINITY };
+    let cmax_h = if max_h > 0 { (max_h as f32 + bar).max(cmin_h) } else { f32::INFINITY };
+    geom.w = geom.w.clamp(cmin_w, cmax_w);
+    geom.h = geom.h.clamp(cmin_h, cmax_h);
+    geom
+}
+
 /// If `(gx, gy)` (content-area coords) falls within a window's *content* region
 /// — the frame minus the title bar when decorated — the surface-local
 /// coordinates within it, else `None`. Used to hit-test drag-and-drop targets.
@@ -1659,16 +1683,35 @@ fn main() -> anyhow::Result<()> {
                         max_h,
                     } => {
                         let mut s = shared.borrow_mut();
+                        let (cw, ch) = s.content;
                         let meta = s.meta.entry(id.0).or_default();
                         meta.min_w = min_w;
                         meta.min_h = min_h;
                         meta.max_w = max_w;
                         meta.max_h = max_h;
-                        let mut decoration_changed = None;
+                        let mut need_resize = false;
                         if meta.decorated != decorated {
-                            decoration_changed = Some(meta.geom);
                             meta.decorated = decorated;
+                            need_resize = true;
                             dirty_windows = true;
+                        }
+                        // Honour the client's (possibly just-changed) min/max size
+                        // hints: some clients raise their minimum size — e.g. a
+                        // drag-and-drop target expanding on drop — and then render
+                        // at that minimum, which would overflow the smaller
+                        // host-driven frame (the contents look mysteriously
+                        // resized). Re-clamp the frame to the client's own hint
+                        // bounds (not the global floor, so small dialogs aren't
+                        // force-grown) so the window tracks what the client draws.
+                        let clamped =
+                            clamp_to_client_hints(meta.geom, decorated, min_w, min_h, max_w, max_h);
+                        if (clamped.w - meta.geom.w).abs() > 0.5
+                            || (clamped.h - meta.geom.h).abs() > 0.5
+                        {
+                            meta.geom.w = clamped.w;
+                            meta.geom.h = clamped.h;
+                            meta.geom.clamp_pos(cw, ch);
+                            need_resize = true;
                         }
                         // A title-only change must NOT rebuild the window model:
                         // `set_vec` recreates every WindowView (and its focused
@@ -1681,6 +1724,7 @@ fn main() -> anyhow::Result<()> {
                             meta.title = title.clone();
                         }
                         meta.app_id = app_id;
+                        let new_geom = meta.geom;
                         s.pending.insert(
                             id.0,
                             Frame {
@@ -1689,10 +1733,11 @@ fn main() -> anyhow::Result<()> {
                                 pixels,
                             },
                         );
-                        // If the decoration mode was first learned here, re-size
-                        // the client to its content area (frame minus title bar).
-                        if let Some(geom) = decoration_changed {
-                            let (w, h) = geom.content_size(decorated);
+                        // Reconfigure the client to the frame's content area when
+                        // the decoration mode was first learned or the frame was
+                        // re-clamped to the size hints above.
+                        if need_resize {
+                            let (w, h) = new_geom.content_size(decorated);
                             let _ = cmd_tx.send(Command::ResizeWindow { id, width: w, height: h });
                         }
                         // First buffer for a window on the active task: ensure it
@@ -1700,12 +1745,23 @@ fn main() -> anyhow::Result<()> {
                         if tasks.borrow().is_visible(id) && !s.rows.contains_key(&id.0) {
                             dirty_windows = true;
                         }
-                        // Apply a title-only change in place (unless a rebuild is
-                        // already happening this tick for another reason).
-                        if title_changed && !dirty_windows {
+                        // Apply title / geometry changes in place (unless a rebuild
+                        // is already happening this tick for another reason).
+                        if !dirty_windows && (title_changed || need_resize) {
                             if let Some(&row) = s.rows.get(&id.0) {
                                 if let Some(mut t) = windows_model.row_data(row) {
-                                    t.title = title.into();
+                                    if title_changed {
+                                        t.title = title.into();
+                                    }
+                                    // Only touch geometry when we actually
+                                    // re-clamped, so a plain title update can't
+                                    // fight an in-progress move/resize.
+                                    if need_resize {
+                                        t.x = new_geom.x;
+                                        t.y = new_geom.y;
+                                        t.width = new_geom.w;
+                                        t.height = new_geom.h;
+                                    }
                                     windows_model.set_row_data(row, t);
                                 }
                             }
@@ -2839,6 +2895,26 @@ mod tests {
         assert_eq!(snap_geom(7, cw, ch), WinGeom { x: 500.0, y: 400.0, w: 500.0, h: 400.0 });
         // Zone 3 (and any unknown zone) maximizes to the full area.
         assert_eq!(snap_geom(3, cw, ch), WinGeom { x: 0.0, y: 0.0, w: cw, h: ch });
+    }
+
+    #[test]
+    fn clamp_to_client_hints_grows_shrinks_and_ignores_unset() {
+        let g = WinGeom { x: 10.0, y: 20.0, w: 300.0, h: 300.0 };
+        // No hints: unchanged (no global floor applied here).
+        assert_eq!(clamp_to_client_hints(g, true, 0, 0, 0, 0), g);
+        // A raised minimum grows the frame; the title bar is added to height.
+        let grown = clamp_to_client_hints(g, true, 500, 400, 0, 0);
+        assert_eq!(grown.w, 500.0);
+        assert_eq!(grown.h, 400.0 + TITLE_BAR_H);
+        // Position is left untouched.
+        assert_eq!((grown.x, grown.y), (10.0, 20.0));
+        // A maximum below the current size shrinks the frame (fixed-size dialog).
+        let shrunk = clamp_to_client_hints(g, true, 0, 0, 150, 150);
+        assert_eq!(shrunk.w, 150.0);
+        assert_eq!(shrunk.h, 150.0 + TITLE_BAR_H);
+        // Undecorated: no title bar added to the height bound.
+        let u = clamp_to_client_hints(g, false, 0, 400, 0, 0);
+        assert_eq!(u.h, 400.0);
     }
 
     #[test]
