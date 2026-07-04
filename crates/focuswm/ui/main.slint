@@ -48,6 +48,10 @@ component ClientSurface inherits Rectangle {
                     Logic.pointer-moved(root.id, ta.mouse-x, ta.mouse-y);
                 }
             }
+            scroll-event(e) => {
+                Logic.pointer-axis(root.id, e.delta-x, e.delta-y);
+                accept
+            }
         }
     }
 
@@ -306,6 +310,10 @@ component WindowView inherits Rectangle {
                     property <length> rlast-y;
                     // Coordinates are relative to the content area (below the
                     // title bar), matching the client's surface 1:1.
+                    scroll-event(e) => {
+                        Logic.pointer-axis(tile.id, e.delta-x, e.delta-y);
+                        accept
+                    }
                     pointer-event(e) => {
                         fs.focus();
                         if e.kind == PointerEventKind.down {
@@ -483,9 +491,23 @@ export component Desktop inherits Window {
             : t == "6" ? 5 : t == "7" ? 6 : t == "8" ? 7 : t == "9" ? 8 : -1
     }
 
+    // Close whichever dialog overlay is open; false if none was.
+    function close-open-dialog() -> bool {
+        if (root.launcher-open) { root.launcher-open = false; return true; }
+        if (root.task-settings-open) { root.task-settings-open = false; return true; }
+        if (root.settings-open) { root.settings-open = false; return true; }
+        if (root.report-open) { root.report-open = false; return true; }
+        if (root.wizard-open) { root.wizard-open = false; return true; }
+        return false;
+    }
+
     // Global shortcuts, captured before keys reach the focused client window.
     shortcuts := FocusScope {
         capture-key-pressed(e) => {
+            // Escape dismisses an open dialog overlay.
+            if (e.text == Key.Escape && root.close-open-dialog()) {
+                return accept;
+            }
             // Alt+Tab / Alt+Shift+Tab: cycle the active task's windows.
             if (e.modifiers.alt && e.text == Key.Tab) {
                 Logic.cycle-window(!e.modifiers.shift);
@@ -497,6 +519,11 @@ export component Desktop inherits Window {
                 root.launcher-open = true;
                 return accept;
             }
+            // Ctrl+Alt+Left/Right: previous / next virtual desktop.
+            if (e.modifiers.control && e.modifiers.alt) {
+                if (e.text == Key.LeftArrow) { Logic.switch-task-delta(-1); return accept; }
+                if (e.text == Key.RightArrow) { Logic.switch-task-delta(1); return accept; }
+            }
             if (e.modifiers.meta) {
                 if (e.text == Key.Return) { Logic.open-terminal(); return accept; }
                 if (e.text == "l") { Logic.lock(); return accept; }
@@ -507,6 +534,11 @@ export component Desktop inherits Window {
                 if (e.text == Key.RightArrow) { Logic.snap-focused(2); return accept; }
                 if (e.text == Key.UpArrow) { Logic.maximize-focused(); return accept; }
                 if (e.text == Key.DownArrow) { Logic.minimize-focused(); return accept; }
+                // Super+PageUp/PageDown also step between desktops.
+                if (e.text == Key.PageUp) { Logic.switch-task-delta(-1); return accept; }
+                if (e.text == Key.PageDown) { Logic.switch-task-delta(1); return accept; }
+                // Super+0 = desktop 0; Super+1..9 = that task.
+                if (e.text == "0") { Logic.switch-to-desktop0(); return accept; }
                 if (root.digit-index(e.text) >= 0) {
                     Logic.switch-task-index(root.digit-index(e.text));
                     return accept;
@@ -609,13 +641,30 @@ export component Desktop inherits Window {
     }
     }
 
-    // Creation wizard overlay.
+    // Dialog overlays. Closing returns focus to the global shortcut scope, so
+    // shortcuts keep working after a dialog grabbed focus (e.g. a text field).
+    // The wrapping scope captures Escape *before* a focused text field inside a
+    // dialog consumes it, so Esc closes the dialog even while typing; when no
+    // dialog is open, focus is on `shortcuts`, which handles Escape itself.
+    // Only enabled while a dialog is up — a FocusScope grabs focus on click, so
+    // left always-on it would swallow clicks meant for the desktop below.
+    FocusScope {
+        enabled: root.wizard-open || root.settings-open || root.task-settings-open
+            || root.report-open || root.launcher-open;
+        capture-key-pressed(e) => {
+            if (e.text == Key.Escape && root.close-open-dialog()) {
+                shortcuts.focus();
+                return accept;
+            }
+            reject
+        }
+
     wizard := Wizard {
         visible: root.wizard-open;
         x: 0; y: 0;
         width: 100%;
         height: 100%;
-        close => { root.wizard-open = false; }
+        close => { root.wizard-open = false; shortcuts.focus(); }
     }
 
     // Settings overlay.
@@ -624,7 +673,7 @@ export component Desktop inherits Window {
         x: 0; y: 0;
         width: 100%;
         height: 100%;
-        close => { root.settings-open = false; }
+        close => { root.settings-open = false; shortcuts.focus(); }
     }
 
     // Per-task settings overlay.
@@ -633,7 +682,7 @@ export component Desktop inherits Window {
         x: 0; y: 0;
         width: 100%;
         height: 100%;
-        close => { root.task-settings-open = false; }
+        close => { root.task-settings-open = false; shortcuts.focus(); }
     }
 
     // Report overlay.
@@ -642,7 +691,7 @@ export component Desktop inherits Window {
         x: 0; y: 0;
         width: 100%;
         height: 100%;
-        close => { root.report-open = false; }
+        close => { root.report-open = false; shortcuts.focus(); }
     }
 
     // Run-command launcher overlay.
@@ -651,7 +700,8 @@ export component Desktop inherits Window {
         x: 0; y: 0;
         width: 100%;
         height: 100%;
-        close => { root.launcher-open = false; }
+        close => { root.launcher-open = false; shortcuts.focus(); }
+    }
     }
 
     // Notification toasts (top-right stack).

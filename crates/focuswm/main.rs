@@ -225,6 +225,13 @@ fn reorder_delta(dy: f32) -> i32 {
     (dy / ROW_PITCH).round() as i32
 }
 
+/// Step `cur` by `delta` within `0..n`, wrapping around both ends. Used to
+/// cycle through virtual desktops. `n` must be > 0.
+fn wrap_index(cur: usize, delta: i32, n: usize) -> usize {
+    let n = n as i32;
+    (((cur as i32 + delta) % n + n) % n) as usize
+}
+
 /// UI-thread state shared between the event pump and the rendering notifier.
 #[derive(Default)]
 struct Shared {
@@ -1137,6 +1144,35 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Ctrl+Alt+Left/Right, Super+PageUp/PageDown: step to the previous / next
+    // virtual desktop, wrapping around. The cycle is desktop 0 (the scratch
+    // desktop) followed by the tasks in sidebar order. Delegates to the
+    // switch-task / desktop-0 callbacks so the switching logic stays in one place.
+    ui.global::<Logic>().on_switch_task_delta({
+        let tasks = tasks.clone();
+        let weak = weak.clone();
+        move |delta| {
+            let (target, n) = {
+                let list = tasks.borrow();
+                let ids: Vec<Option<TaskId>> = std::iter::once(None)
+                    .chain(list.tasks().iter().map(|t| Some(t.id)))
+                    .collect();
+                let cur = ids.iter().position(|i| *i == list.active()).unwrap_or(0);
+                let next = wrap_index(cur, delta, ids.len());
+                (ids[next], ids.len())
+            };
+            if n <= 1 {
+                return; // only desktop 0 exists; nowhere to go
+            }
+            if let Some(ui) = weak.upgrade() {
+                match target {
+                    Some(id) => ui.global::<Logic>().invoke_switch_task(id.0 as i32),
+                    None => ui.global::<Logic>().invoke_switch_to_desktop0(),
+                }
+            }
+        }
+    });
+
     // Super+W: close the focused window.
     ui.global::<Logic>().on_close_active_window({
         let focused = focused.clone();
@@ -1603,6 +1639,22 @@ fn main() -> anyhow::Result<()> {
                 id: WindowId(id as u64),
                 button: evdev_button(btn),
                 pressed,
+            });
+        }
+    });
+
+    // Scroll wheel / touchpad scroll over a client surface. Slint's delta is
+    // positive for wheel-up; Wayland's axis convention is positive for
+    // down/right (libinput), so flip both axes.
+    ui.global::<Logic>().on_pointer_axis({
+        let cmd_tx = cmd_tx.clone();
+        let mark_active = mark_active.clone();
+        move |id, dx, dy| {
+            mark_active();
+            let _ = cmd_tx.send(Command::PointerAxis {
+                id: WindowId(id as u64),
+                dx: -dx as f64,
+                dy: -dy as f64,
             });
         }
     });
@@ -3215,6 +3267,19 @@ mod tests {
         assert_eq!(snap_geom(7, cw, ch), WinGeom { x: 500.0, y: 400.0, w: 500.0, h: 400.0 });
         // Zone 3 (and any unknown zone) maximizes to the full area.
         assert_eq!(snap_geom(3, cw, ch), WinGeom { x: 0.0, y: 0.0, w: cw, h: ch });
+    }
+
+    #[test]
+    fn wrap_index_cycles_both_directions() {
+        // Forward, wrapping past the end.
+        assert_eq!(wrap_index(0, 1, 3), 1);
+        assert_eq!(wrap_index(2, 1, 3), 0);
+        // Backward, wrapping past the start.
+        assert_eq!(wrap_index(0, -1, 3), 2);
+        assert_eq!(wrap_index(1, -1, 3), 0);
+        // Single desktop: always itself.
+        assert_eq!(wrap_index(0, 1, 1), 0);
+        assert_eq!(wrap_index(0, -1, 1), 0);
     }
 
     #[test]

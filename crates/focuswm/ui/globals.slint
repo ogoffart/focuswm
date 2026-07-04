@@ -158,6 +158,9 @@ export global Logic {
     // Global keyboard shortcuts.
     callback cycle-window(bool /* forward */);
     callback switch-task-index(int /* index */);
+    // Step to the next (+1) / previous (-1) virtual desktop, wrapping around.
+    // Desktop 0 (the scratch desktop) is part of the cycle, before the tasks.
+    callback switch-task-delta(int /* delta */);
     callback close-active-window();
     // Report navigation (changes the selected day; the week follows).
     callback report-prev-day();
@@ -192,6 +195,9 @@ export global Logic {
     callback dnd-drop(int /* origin */, length /* gx */, length /* gy */, int /* btn */);
     callback pointer-moved(int /* id */, length /* x */, length /* y */);
     callback pointer-button(int /* id */, length /* x */, length /* y */, int /* btn */, bool /* pressed */);
+    // Scroll wheel / touchpad scroll over a window, in Slint's convention
+    // (positive delta-y = wheel up); the host flips it for Wayland.
+    callback pointer-axis(int /* id */, length /* dx */, length /* dy */);
     callback key-event(string /* text */, bool /* ctrl */, bool /* alt */, bool /* shift */, bool /* pressed */);
     // Typed/composed text from the focused window's input method (accents,
     // AltGr, dead-key results), to type verbatim into the client.
