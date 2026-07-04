@@ -21,20 +21,28 @@ fn settings_save_forwards_fields() {
     ui.global::<SettingsData>().set_browser("firefox".into());
     ui.global::<SettingsData>().set_categories_csv("work, play".into());
     ui.global::<SettingsData>().set_idle_minutes("7".into());
+    ui.global::<SettingsData>().set_github_token("ghp_seeded".into());
     ui.set_settings_open(true);
 
     let got = Rc::new(RefCell::new(None));
     {
         let got = got.clone();
-        ui.global::<Logic>().on_save_settings(move |term, brow, cats, idle, _ffm| {
+        ui.global::<Logic>().on_save_settings(move |term, brow, cats, idle, _ffm, gh| {
             *got.borrow_mut() = Some((
                 term.to_string(),
                 brow.to_string(),
                 cats.to_string(),
                 idle.to_string(),
+                gh.to_string(),
             ));
         });
     }
+
+    // Edit the token field, then Save: it forwards the edited value.
+    testing::ElementHandle::find_by_element_id(&ui, "Settings::gh")
+        .next()
+        .expect("the GitHub token field")
+        .set_accessible_value("ghp_edited");
 
     // Click the settings dialog's Save (distinguish from the task-settings Save).
     testing::ElementHandle::find_by_accessible_label(&ui, "Save")
@@ -44,6 +52,12 @@ fn settings_save_forwards_fields() {
 
     assert_eq!(
         got.take(),
-        Some(("foot".into(), "firefox".into(), "work, play".into(), "7".into())),
+        Some((
+            "foot".into(),
+            "firefox".into(),
+            "work, play".into(),
+            "7".into(),
+            "ghp_edited".into(),
+        )),
     );
 }

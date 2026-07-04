@@ -45,6 +45,9 @@ export global SettingsData {
     in property <string> categories-csv;
     in property <string> idle-minutes;
     in-out property <bool> focus-follows-mouse: true;
+    // GitHub personal-access token for the issue/PR integration (blank = use
+    // the GITHUB_TOKEN environment variable, or disable when that's unset too).
+    in property <string> github-token;
 }
 
 // Values for the per-task settings dialog. The host pushes the current task's
@@ -143,7 +146,7 @@ export global Logic {
     callback run-command(string /* command */);
     // Settings + report (host populates data and toggles the dialog).
     callback open-settings();
-    callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */, string /* idle-minutes */, bool /* focus-follows-mouse */);
+    callback save-settings(string /* terminal */, string /* browser */, string /* categories-csv */, string /* idle-minutes */, bool /* focus-follows-mouse */, string /* github-token */);
     callback open-report();
     // Lock screen (also raised automatically on idle).
     callback lock();

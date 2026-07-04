@@ -371,10 +371,14 @@ fn main() -> anyhow::Result<()> {
     };
     let tray_items: Rc<RefCell<Vec<TrayIcon>>> = Rc::new(RefCell::new(Vec::new()));
 
-    // GitHub integration (only when GITHUB_TOKEN is set): wizard issue search and
-    // background polling of linked issues/PRs for new activity.
-    let github = github::spawn();
-    ui.global::<AppData>().set_github_enabled(github.is_some());
+    // GitHub integration (needs a token — from the settings dialog, or the
+    // GITHUB_TOKEN environment variable as a fallback): wizard issue search and
+    // background polling of linked issues/PRs for new activity. Held in a
+    // RefCell so saving a new token in the settings can restart the subsystem.
+    let github: Rc<RefCell<Option<github::Github>>> = Rc::new(RefCell::new(
+        github::resolve_token(&tasks.borrow().settings().github_token).and_then(github::spawn),
+    ));
+    ui.global::<AppData>().set_github_enabled(github.borrow().is_some());
     let issue_results_model = Rc::new(VecModel::<IssueResult>::default());
     ui.global::<AppData>()
         .set_issue_results(ModelRc::from(issue_results_model.clone()));
@@ -662,7 +666,7 @@ fn main() -> anyhow::Result<()> {
 
     // Wizard: run a GitHub issue/PR search (results arrive async via GhEvent).
     ui.global::<Logic>().on_search_issues({
-        let requests = github.as_ref().map(|g| g.requests.clone());
+        let github = github.clone();
         let weak = weak.clone();
         let toast_tx = toast_tx.clone();
         move |query| {
@@ -670,8 +674,15 @@ fn main() -> anyhow::Result<()> {
             if query.is_empty() {
                 return;
             }
-            let Some(requests) = &requests else {
-                internal_toast(&toast_tx, "focuswm", "GitHub disabled", "Set GITHUB_TOKEN to search issues.");
+            // Borrow per invocation, so a token saved in the settings after
+            // startup is picked up without a restart.
+            let Some(requests) = github.borrow().as_ref().map(|g| g.requests.clone()) else {
+                internal_toast(
+                    &toast_tx,
+                    "focuswm",
+                    "GitHub disabled",
+                    "Set a GitHub token in Settings (or GITHUB_TOKEN) to search issues.",
+                );
                 return;
             };
             if let Some(ui) = weak.upgrade() {
@@ -942,16 +953,18 @@ fn main() -> anyhow::Result<()> {
                 .set_idle_minutes(s.idle_minutes.to_string().into());
             ui.global::<SettingsData>()
                 .set_focus_follows_mouse(s.focus_follows_mouse);
+            ui.global::<SettingsData>().set_github_token(s.github_token.clone().into());
             ui.set_settings_open(true);
         }
     });
 
     ui.global::<Logic>().on_save_settings({
         let tasks = tasks.clone();
+        let github = github.clone();
         let apply_categories = apply_categories.clone();
         let mark_active = mark_active.clone();
         let weak = weak.clone();
-        move |terminal, browser, categories_csv, idle_minutes, focus_follows_mouse| {
+        move |terminal, browser, categories_csv, idle_minutes, focus_follows_mouse, github_token| {
             mark_active();
             let mut cats: Vec<String> = categories_csv
                 .split(',')
@@ -965,18 +978,29 @@ fn main() -> anyhow::Result<()> {
                 .trim()
                 .parse::<u64>()
                 .unwrap_or_else(|_| focuswm_shell::default_idle_minutes());
+            let github_token = github_token.trim().to_string();
+            let token_changed = tasks.borrow().settings().github_token != github_token;
             tasks.borrow_mut().set_settings(Settings {
                 terminal: terminal.to_string(),
                 browser: browser.to_string(),
                 categories: cats,
                 idle_minutes: idle,
                 focus_follows_mouse,
+                github_token: github_token.clone(),
             });
             persist::save(&tasks.borrow());
             apply_categories();
+            if token_changed {
+                // Restart the GitHub subsystem on the new token (dropping the
+                // old handle shuts its worker thread down); with no token at
+                // all the integration turns off.
+                *github.borrow_mut() =
+                    github::resolve_token(&github_token).and_then(github::spawn);
+            }
             if let Some(ui) = weak.upgrade() {
                 ui.global::<AppData>()
                     .set_browser_name(browser_label(&tasks.borrow()).into());
+                ui.global::<AppData>().set_github_enabled(github.borrow().is_some());
             }
         }
     });
@@ -1649,7 +1673,7 @@ fn main() -> anyhow::Result<()> {
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now),
         );
-        let github_events = github.as_ref().map(|g| g.events.clone());
+        let github = github.clone();
         let issue_results_model = issue_results_model.clone();
         let pending_link = pending_link.clone();
         let toast_tx = toast_tx.clone();
@@ -2156,7 +2180,9 @@ fn main() -> anyhow::Result<()> {
             }
 
             // GitHub results: search hits populate the wizard; activity on a
-            // linked issue/PR raises the task's dot and posts a toast.
+            // linked issue/PR raises the task's dot and posts a toast. Borrowed
+            // per tick so a subsystem restarted with a new token is picked up.
+            let github_events = github.borrow().as_ref().map(|g| g.events.clone());
             if let Some(events) = &github_events {
                 let mut tasks_dirty = false;
                 while let Ok(ev) = events.try_recv() {
@@ -2354,29 +2380,33 @@ fn main() -> anyhow::Result<()> {
     });
 
     // Poll linked GitHub issues/PRs for new activity: shortly after start and
-    // then every couple of minutes. Results arrive as GhEvent::Activity.
-    let github_poll_timer = slint::Timer::default();
-    if let Some(requests) = github.as_ref().map(|g| g.requests.clone()) {
-        let poll: Rc<dyn Fn()> = {
-            let tasks = tasks.clone();
-            Rc::new(move || {
-                for t in tasks.borrow().tasks() {
-                    if let Some(link) = &t.github {
-                        let _ = requests.send(github::Request::Poll {
-                            task_id: t.id.0,
-                            slug: link.slug.clone(),
-                            number: link.number,
-                        });
-                    }
+    // then every couple of minutes. Results arrive as GhEvent::Activity. The
+    // timer always runs and checks the subsystem per firing, so enabling GitHub
+    // from the settings dialog starts polling without a restart.
+    let github_poll: Rc<dyn Fn()> = {
+        let tasks = tasks.clone();
+        let github = github.clone();
+        Rc::new(move || {
+            let Some(requests) = github.borrow().as_ref().map(|g| g.requests.clone()) else {
+                return;
+            };
+            for t in tasks.borrow().tasks() {
+                if let Some(link) = &t.github {
+                    let _ = requests.send(github::Request::Poll {
+                        task_id: t.id.0,
+                        slug: link.slug.clone(),
+                        number: link.number,
+                    });
                 }
-            })
-        };
-        poll();
-        github_poll_timer.start(slint::TimerMode::Repeated, Duration::from_secs(150), {
-            let poll = poll.clone();
-            move || poll()
-        });
-    }
+            }
+        })
+    };
+    github_poll();
+    let github_poll_timer = slint::Timer::default();
+    github_poll_timer.start(slint::TimerMode::Repeated, Duration::from_secs(150), {
+        let github_poll = github_poll.clone();
+        move || github_poll()
+    });
 
     ui.run()?;
 

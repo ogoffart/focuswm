@@ -48,6 +48,11 @@ export component Settings inherits Rectangle {
                 text: "Focus follows mouse";
                 checked: SettingsData.focus-follows-mouse;
             }
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "GitHub token — for issue links & notifications (blank = use $GITHUB_TOKEN)"; color: Theme.text-dim; font-size: 12px; }
+                gh := LineEdit { text: SettingsData.github-token; placeholder-text: "ghp_…"; }
+            }
 
             HorizontalLayout {
                 spacing: 10px;
@@ -57,7 +62,7 @@ export component Settings inherits Rectangle {
                     text: "Save";
                     primary: true;
                     clicked => {
-                        Logic.save-settings(term.text, brow.text, cats.text, idle.text, ffm.checked);
+                        Logic.save-settings(term.text, brow.text, cats.text, idle.text, ffm.checked, gh.text);
                         root.close();
                     }
                 }

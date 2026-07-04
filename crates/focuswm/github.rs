@@ -39,10 +39,21 @@ pub struct Github {
     pub events: async_channel::Receiver<GhEvent>,
 }
 
-/// Start the GitHub subsystem if a token is configured. Returns `None` (feature
-/// off) when `GITHUB_TOKEN` is unset/empty or the client can't be built.
-pub fn spawn() -> Option<Github> {
-    let token = std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.trim().is_empty())?;
+/// The token the subsystem would use: the one configured in the settings when
+/// non-empty, else the `GITHUB_TOKEN` environment variable.
+pub fn resolve_token(settings_token: &str) -> Option<String> {
+    let configured = settings_token.trim();
+    if !configured.is_empty() {
+        return Some(configured.to_string());
+    }
+    std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.trim().is_empty())
+}
+
+/// Start the GitHub subsystem with `token`. Returns `None` (feature off) when
+/// the thread can't be started; the subsystem shuts down when the returned
+/// handle (its request sender) is dropped. Restart with a new token by dropping
+/// the old handle and calling this again.
+pub fn spawn(token: String) -> Option<Github> {
     let (req_tx, req_rx) = std::sync::mpsc::channel::<Request>();
     let (ev_tx, ev_rx) = async_channel::unbounded::<GhEvent>();
 

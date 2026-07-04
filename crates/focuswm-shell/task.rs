@@ -616,6 +616,11 @@ pub struct Settings {
     /// Whether hovering a window gives it keyboard focus (focus-follows-mouse).
     #[serde(default = "default_focus_follows_mouse")]
     pub focus_follows_mouse: bool,
+    /// GitHub personal-access token for the issue/PR integration (empty = fall
+    /// back to the `GITHUB_TOKEN` environment variable). Stored in the plain
+    /// JSON config file.
+    #[serde(default)]
+    pub github_token: String,
 }
 
 impl Default for Settings {
@@ -626,6 +631,7 @@ impl Default for Settings {
             categories: default_categories(),
             idle_minutes: default_idle_minutes(),
             focus_follows_mouse: default_focus_follows_mouse(),
+            github_token: String::new(),
         }
     }
 }
@@ -975,16 +981,20 @@ mod tests {
         assert!(list.settings().focus_follows_mouse);
         assert!(Settings::default().focus_follows_mouse);
         let mut list = list;
+        // A GitHub token isn't configured by default.
+        assert!(Settings::default().github_token.is_empty());
         list.set_settings(Settings {
             terminal: "foot".into(),
             browser: "firefox".into(),
             categories: vec!["x".into()],
             idle_minutes: 10,
             focus_follows_mouse: false,
+            github_token: "ghp_test".into(),
         });
         assert_eq!(list.settings().terminal, "foot");
         assert_eq!(list.settings().categories, vec!["x".to_string()]);
         assert!(!list.settings().focus_follows_mouse);
+        assert_eq!(list.settings().github_token, "ghp_test");
     }
 
     #[test]
