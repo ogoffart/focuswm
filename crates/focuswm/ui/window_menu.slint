@@ -28,12 +28,20 @@ export component WindowMenu inherits Rectangle {
             }
             Menu {
                 title: "Move to desktop";
+                // The listed windows always belong to the active desktop, so
+                // that entry is the window's current one: checked + disabled.
                 MenuItem {
                     title: "Desktop 0 (scratch)";
+                    checkable: true;
+                    checked: AppData.active-task < 0;
+                    enabled: AppData.active-task >= 0;
                     activated => { Logic.move-window-to-desktop(win.id, -1); }
                 }
                 for t in AppData.tasks: MenuItem {
                     title: t.name == "" ? "(unnamed)" : t.name;
+                    checkable: true;
+                    checked: t.id == AppData.active-task;
+                    enabled: t.id != AppData.active-task;
                     activated => { Logic.move-window-to-desktop(win.id, t.id); }
                 }
             }
