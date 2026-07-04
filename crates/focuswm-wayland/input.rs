@@ -435,16 +435,18 @@ impl FocusState {
     }
 
     /// Tell a window whether it is maximized: set/clear the xdg `Maximized`
-    /// state, sizing it to the output when maximized.
+    /// state. The size is the UI's call — it sends a `ResizeWindow` with the
+    /// frame's content area alongside this command; sizing to the output here
+    /// would override that with a size that includes the sidebar, making the
+    /// client render bigger than its frame (scaled contents, mismapped pointer
+    /// coordinates).
     fn set_window_maximized(&mut self, id: WindowId, maximized: bool) {
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
-        let size = self.current_output_size;
         if let Some(entry) = self.windows.values().find(|e| e.id == id) {
             let toplevel = entry.toplevel.clone();
             toplevel.with_pending_state(|state| {
                 if maximized {
                     state.states.set(xdg_toplevel::State::Maximized);
-                    state.size = Some((size.0.max(1), size.1.max(1)).into());
                 } else {
                     state.states.unset(xdg_toplevel::State::Maximized);
                 }

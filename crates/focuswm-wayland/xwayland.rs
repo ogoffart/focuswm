@@ -200,6 +200,30 @@ impl XwmHandler for FocusState {
         }
     }
 
+    // (Un)maximize requests from X11 clients (e.g. a _NET_WM_STATE toggle from
+    // the app's own button): mirror the xdg path and let the UI apply them.
+    fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(wl) = window.wl_surface() {
+            if let Some(entry) = self.x11_windows.get(&wl) {
+                let _ = self.events.send(Event::MaximizeRequested {
+                    id: entry.id,
+                    maximized: true,
+                });
+            }
+        }
+    }
+
+    fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(wl) = window.wl_surface() {
+            if let Some(entry) = self.x11_windows.get(&wl) {
+                let _ = self.events.send(Event::MaximizeRequested {
+                    id: entry.id,
+                    maximized: false,
+                });
+            }
+        }
+    }
+
     // --- Clipboard / primary-selection bridge (X -> Wayland) ---
 
     fn allow_selection_access(&mut self, _xwm: XwmId, _selection: SelectionTarget) -> bool {

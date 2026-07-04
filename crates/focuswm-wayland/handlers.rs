@@ -552,22 +552,26 @@ impl XdgShellHandler for FocusState {
         }
     }
 
-    // focuswm presents each task's windows filling the content area, so
-    // maximize/fullscreen just confirm the current (output-sized) geometry.
+    // The UI owns window geometry (the floating frame), so hand (un)maximize
+    // requests to it; it answers with `SetMaximized` + `ResizeWindow`, which
+    // produce the configure the client is waiting for — sized to the frame's
+    // content area rather than the whole output (which includes the sidebar).
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        let size = self.current_output_size;
-        surface.with_pending_state(|state| {
-            state.states.set(xdg_toplevel::State::Maximized);
-            state.size = Some((size.0.max(1), size.1.max(1)).into());
-        });
-        surface.send_configure();
+        if let Some(entry) = self.windows.get(surface.wl_surface()) {
+            let _ = self.events.send(Event::MaximizeRequested {
+                id: entry.id,
+                maximized: true,
+            });
+        }
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        surface.with_pending_state(|state| {
-            state.states.unset(xdg_toplevel::State::Maximized);
-        });
-        surface.send_configure();
+        if let Some(entry) = self.windows.get(surface.wl_surface()) {
+            let _ = self.events.send(Event::MaximizeRequested {
+                id: entry.id,
+                maximized: false,
+            });
+        }
     }
 
     // A client-side-decorated client (e.g. GTK's header-bar minimize button)

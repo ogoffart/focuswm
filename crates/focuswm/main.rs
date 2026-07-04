@@ -1201,13 +1201,33 @@ fn main() -> anyhow::Result<()> {
         let shared = shared.clone();
         let windows_model = windows_model.clone();
         let cmd_tx = cmd_tx.clone();
+        let tasks = tasks.clone();
         let mark_active = mark_active.clone();
         move |id, edges, dx, dy| {
             mark_active();
             let id = id as u64;
+            let wid = WindowId(id);
+            // A manual resize leaves the maximized state: clear it so the client
+            // drops its maximized look and the ▣ button maximizes again instead
+            // of "restoring" a stale pre-maximize frame. Patch the row in place —
+            // a rebuild here would recreate the view and break the drag grab.
+            if tasks.borrow().is_maximized(wid) {
+                tasks.borrow_mut().set_maximized(wid, false);
+                let _ = cmd_tx.send(Command::SetMaximized { id: wid, maximized: false });
+                let s = shared.borrow();
+                if let Some(row) = s.rows.get(&id).copied() {
+                    if let Some(mut t) = windows_model.row_data(row) {
+                        t.maximized = false;
+                        windows_model.set_row_data(row, t);
+                    }
+                }
+            }
             let mut s = shared.borrow_mut();
             let (g, decorated) = {
                 let Some(meta) = s.meta.get_mut(&id) else { return };
+                // The frame is no longer "maximized"; forget the stale restore
+                // target so the next maximize saves this user-chosen frame.
+                meta.restore = None;
                 // Clamp to the client's min/max size hints (plus the global floor).
                 let bounds = meta.frame_bounds();
                 let mut g = meta.geom;
@@ -1217,7 +1237,7 @@ fn main() -> anyhow::Result<()> {
             };
             let (cwid, chei) = g.content_size(decorated);
             let _ = cmd_tx.send(Command::ResizeWindow {
-                id: WindowId(id),
+                id: wid,
                 width: cwid,
                 height: chei,
             });
@@ -1684,6 +1704,18 @@ fn main() -> anyhow::Result<()> {
                         // minimizes it.
                         if let Some(ui) = weak.upgrade() {
                             ui.global::<Logic>().invoke_minimize_window(id.0 as i32);
+                        }
+                    }
+                    Event::MaximizeRequested { id, maximized } => {
+                        // A client asked to be (un)maximized — a CSD window's own
+                        // maximize button, or an X11 _NET_WM_STATE toggle. Reuse
+                        // the toggle handler (frame geometry + SetMaximized +
+                        // ResizeWindow) but only when the state actually changes,
+                        // so a repeated request can't flip it the wrong way.
+                        if tasks.borrow().is_maximized(id) != maximized {
+                            if let Some(ui) = weak.upgrade() {
+                                ui.global::<Logic>().invoke_maximize_window(id.0 as i32);
+                            }
                         }
                     }
                     Event::WindowRemoved(id) => {

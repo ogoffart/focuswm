@@ -58,6 +58,10 @@ pub enum Event {
     /// A client-side-decorated window asked to be minimized (its own header-bar
     /// minimize button → `xdg_toplevel.set_minimized`). The UI applies it.
     MinimizeRequested(WindowId),
+    /// A window asked to be (un)maximized — a CSD client's own maximize button
+    /// (`xdg_toplevel.set_maximized`) or an X11 client. The UI owns window
+    /// geometry, so it applies the state and responds with the real size.
+    MaximizeRequested { id: WindowId, maximized: bool },
     /// The window's decoration mode changed (true = compositor draws SSD).
     WindowDecorated { id: WindowId, decorated: bool },
     /// A window committed a new frame: tightly-packed RGBA8 of `width`x`height`,
@@ -179,6 +183,11 @@ impl std::fmt::Debug for Event {
             Event::MinimizeRequested(id) => {
                 f.debug_tuple("MinimizeRequested").field(id).finish()
             }
+            Event::MaximizeRequested { id, maximized } => f
+                .debug_struct("MaximizeRequested")
+                .field("id", id)
+                .field("maximized", maximized)
+                .finish(),
             Event::WindowDecorated { id, decorated } => f
                 .debug_struct("WindowDecorated")
                 .field("id", id)
