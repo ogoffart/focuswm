@@ -359,6 +359,18 @@ impl TaskList {
         self.maximized.remove(&window);
     }
 
+    /// Move a window to another desktop: `Some(task)` for a task (which must
+    /// exist), or `None` for desktop 0 (the scratch desktop). No-op when the
+    /// target task is unknown.
+    pub fn move_window_to(&mut self, window: WindowId, target: Option<TaskId>) {
+        if let Some(id) = target {
+            if self.index_of(id).is_none() {
+                return;
+            }
+        }
+        self.window_task.insert(window, target);
+    }
+
     /// Whether a window is minimized (hidden from the content area).
     pub fn is_minimized(&self, window: WindowId) -> bool {
         self.minimized.contains(&window)
@@ -646,6 +658,25 @@ mod tests {
         assert_eq!(parse_slug("https://gitlab.com/ogoffart/focuswm"), None);
         assert_eq!(parse_slug("/home/olivier/code/focuswm"), None);
         assert_eq!(parse_slug("ogoffart"), None);
+    }
+
+    #[test]
+    fn move_window_to_reassigns_desktop() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        let b = list.add_task("B", "work");
+        list.set_active(a, 0);
+        let w = WindowId(1);
+        list.assign_window(w); // lands on the active task, A
+        assert_eq!(list.task_of_window(w), Some(a));
+        // Move to B, then to desktop 0.
+        list.move_window_to(w, Some(b));
+        assert_eq!(list.task_of_window(w), Some(b));
+        list.move_window_to(w, None);
+        assert_eq!(list.task_of_window(w), None);
+        // Moving to an unknown task is a no-op.
+        list.move_window_to(w, Some(TaskId(999)));
+        assert_eq!(list.task_of_window(w), None);
     }
 
     #[test]

@@ -8,6 +8,7 @@ import { TaskSettings } from "task_settings.slint";
 import { Launcher } from "launcher.slint";
 import { Report } from "report.slint";
 import { LockScreen } from "lock.slint";
+import { WindowMenu } from "window_menu.slint";
 import { Palette } from "std-widgets.slint";
 
 export { AppData, Logic, ReportData, SettingsData, TaskSettingsData, ReportRow, IssueResult, TaskItem, WindowTile, PopupTile, LayerTile, NotificationToast, TrayIcon, Theme }
@@ -230,6 +231,14 @@ component WindowView inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // Right-click the title bar for the window menu (same as the sidebar
+            // window list). Non-grabbing, so the drag/buttons still get clicks.
+            WindowMenu {
+                width: 100%;
+                height: 100%;
+                win: tile;
             }
         }
 

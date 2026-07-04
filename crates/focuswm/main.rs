@@ -1270,6 +1270,39 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Move a window to another desktop (task id, or -1 for desktop 0). The
+    // window leaves the current view; keyboard focus moves to whatever remains.
+    ui.global::<Logic>().on_move_window_to_desktop({
+        let tasks = tasks.clone();
+        let rebuild_windows = rebuild_windows.clone();
+        let refresh_tasks = refresh_tasks.clone();
+        let cmd_tx = cmd_tx.clone();
+        let focused = focused.clone();
+        let mark_active = mark_active.clone();
+        move |id, task_id| {
+            mark_active();
+            let wid = WindowId(id as u64);
+            let target = (task_id >= 0).then(|| focuswm_shell::TaskId(task_id as u64));
+            {
+                let mut list = tasks.borrow_mut();
+                list.move_window_to(wid, target);
+                // If the moved window was focused, focus another one still here.
+                if *focused.borrow() == Some(wid) {
+                    let next = list
+                        .active_windows()
+                        .into_iter()
+                        .find(|w| !list.is_minimized(*w));
+                    *focused.borrow_mut() = next;
+                    if let Some(w) = next {
+                        let _ = cmd_tx.send(Command::FocusWindow(w));
+                    }
+                }
+            }
+            rebuild_windows();
+            refresh_tasks();
+        }
+    });
+
     // Toggle a window's maximized state: fill the content area (saving the
     // current frame to restore later), or restore the saved frame.
     ui.global::<Logic>().on_maximize_window({

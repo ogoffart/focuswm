@@ -169,6 +169,8 @@ export global Logic {
     // Toggle a window's minimized / maximized state.
     callback minimize-window(int /* id */);
     callback maximize-window(int /* id */);
+    // Move a window to another desktop: task id, or -1 for desktop 0 (scratch).
+    callback move-window-to-desktop(int /* id */, int /* task-id */);
     // Snap a window to a screen region: 1=left half, 2=right half, 3=maximize.
     callback snap-window(int /* id */, int /* zone */);
     // Keyboard window management, applied to the focused window (Super+arrows).

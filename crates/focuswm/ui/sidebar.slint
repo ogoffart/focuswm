@@ -1,6 +1,7 @@
 import { Theme } from "theme.slint";
 import { AppData, Logic } from "globals.slint";
 import { TaskItem, WindowTile } from "types.slint";
+import { WindowMenu } from "window_menu.slint";
 import { Button } from "std-widgets.slint";
 
 // A divider plus an uppercase section label.
@@ -69,29 +70,11 @@ component WindowRow inherits Rectangle {
     }
 
     // Right-click context menu (top-most, full-area; non-grabbing so left-clicks
-    // fall through to the row / its ✕).
-    ContextMenuArea {
+    // fall through to the row / its ✕). Shared with the title-bar menu.
+    WindowMenu {
         width: 100%;
         height: 100%;
-        Menu {
-            MenuItem {
-                title: "Focus";
-                activated => { root.activate(); }
-            }
-            MenuItem {
-                title: win.minimized ? "Restore" : "Minimize";
-                activated => { root.minimize(); }
-            }
-            MenuItem {
-                title: win.maximized ? "Unmaximize" : "Maximize";
-                activated => { root.maximize(); }
-            }
-            MenuSeparator {}
-            MenuItem {
-                title: "Close";
-                activated => { root.close(); }
-            }
-        }
+        win: root.win;
     }
 }
 

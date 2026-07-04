@@ -1,0 +1,47 @@
+import { AppData, Logic } from "globals.slint";
+import { WindowTile } from "types.slint";
+
+// The right-click context menu for a client window, shared by the sidebar's
+// window list and the server-side title bar so both offer the same actions.
+// It's non-grabbing, so left-clicks fall through to whatever is beneath it.
+//
+// Composed (not inherited) around `ContextMenuArea`: the Slint menu-lowering
+// pass only handles `ContextMenuArea` as a builtin, so it can't be subclassed.
+export component WindowMenu inherits Rectangle {
+    in property <WindowTile> win;
+
+    ContextMenuArea {
+        width: 100%;
+        height: 100%;
+        Menu {
+            MenuItem {
+                title: "Focus";
+                activated => { Logic.focus-window(win.id); }
+            }
+            MenuItem {
+                title: win.minimized ? "Restore" : "Minimize";
+                activated => { Logic.minimize-window(win.id); }
+            }
+            MenuItem {
+                title: win.maximized ? "Unmaximize" : "Maximize";
+                activated => { Logic.maximize-window(win.id); }
+            }
+            Menu {
+                title: "Move to desktop";
+                MenuItem {
+                    title: "Desktop 0 (scratch)";
+                    activated => { Logic.move-window-to-desktop(win.id, -1); }
+                }
+                for t in AppData.tasks: MenuItem {
+                    title: t.name == "" ? "(unnamed)" : t.name;
+                    activated => { Logic.move-window-to-desktop(win.id, t.id); }
+                }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Close";
+                activated => { Logic.close-window(win.id); }
+            }
+        }
+    }
+}
