@@ -105,6 +105,9 @@ export global AppData {
     in property <length> dnd-y;
     in property <length> dnd-w;
     in property <length> dnd-h;
+    // Cursor shape the focused client requested, as a code (see `cursor-for` in
+    // main.slint). 0 = default arrow.
+    in property <int> client-cursor: 0;
 }
 
 // Actions the UI invokes; the host handles them.

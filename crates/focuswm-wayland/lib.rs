@@ -135,6 +135,10 @@ pub enum Event {
         hot_x: i32,
         hot_y: i32,
     },
+    /// The focused client requested a cursor shape (a small code shared with the
+    /// UI; see `cursor_shape_code` / `cursor-for`). The UI applies it to the
+    /// window's cursor since it, not the compositor, owns the host pointer.
+    CursorShape(u32),
 }
 
 /// One plane of a dmabuf: an owned file descriptor plus its offset and stride.
@@ -245,6 +249,7 @@ impl std::fmt::Debug for Event {
                 .field("hot_x", hot_x)
                 .field("hot_y", hot_y)
                 .finish_non_exhaustive(),
+            Event::CursorShape(code) => f.debug_tuple("CursorShape").field(code).finish(),
         }
     }
 }
@@ -322,6 +327,8 @@ pub fn run(
     let idle_inhibit_state =
         smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<FocusState>(&dh);
     let viewporter_state = smithay::wayland::viewporter::ViewporterState::new::<FocusState>(&dh);
+    let cursor_shape_state =
+        smithay::wayland::cursor_shape::CursorShapeManagerState::new::<FocusState>(&dh);
     let single_pixel_buffer_state =
         smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<FocusState>(&dh);
     let fractional_scale_state =
@@ -375,6 +382,7 @@ pub fn run(
         idle_inhibit_state,
         idle_inhibitors: std::collections::HashSet::new(),
         viewporter_state,
+        cursor_shape_state,
         single_pixel_buffer_state,
         fractional_scale_state,
         xdg_activation_state,

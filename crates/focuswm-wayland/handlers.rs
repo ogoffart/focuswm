@@ -761,8 +761,46 @@ impl SeatHandler for FocusState {
     fn cursor_image(
         &mut self,
         _seat: &Seat<Self>,
-        _image: smithay::input::pointer::CursorImageStatus,
+        image: smithay::input::pointer::CursorImageStatus,
     ) {
+        // The focused client asked for a cursor. We don't own the host pointer
+        // (Slint/winit does), so map the request to a shape code the UI applies
+        // to the window's cursor. Bitmap (`Surface`) cursors fall back to the
+        // default arrow — modern clients use `cursor-shape-v1` (Named) once we
+        // advertise it, which covers the common cases (text, resize, grab, …).
+        let _ = self.events.send(Event::CursorShape(cursor_shape_code(&image)));
+    }
+}
+
+/// Map a cursor request to a small stable code shared with the UI (see
+/// `cursor-for` in `main.slint`). 0 = default arrow.
+fn cursor_shape_code(status: &smithay::input::pointer::CursorImageStatus) -> u32 {
+    use smithay::input::pointer::{CursorIcon as C, CursorImageStatus as S};
+    match status {
+        S::Hidden => 1, // none
+        S::Named(icon) => match icon {
+            C::Pointer => 2,
+            C::Text | C::VerticalText => 3,
+            C::Crosshair => 4,
+            C::Move | C::AllScroll => 5,
+            C::Wait => 6,
+            C::Progress => 7,
+            C::Help => 8,
+            C::NotAllowed => 9,
+            C::Grab => 10,
+            C::Grabbing => 11,
+            C::ColResize => 12,
+            C::RowResize => 13,
+            C::EwResize | C::EResize | C::WResize => 14,
+            C::NsResize | C::NResize | C::SResize => 15,
+            C::NeswResize | C::NeResize | C::SwResize => 16,
+            C::NwseResize | C::NwResize | C::SeResize => 17,
+            C::Alias => 18,
+            C::Copy => 19,
+            C::NoDrop => 20,
+            _ => 0, // Default, ContextMenu, Cell, ZoomIn/Out, …
+        },
+        S::Surface(_) => 0, // bitmap cursor: fall back to the default arrow
     }
 }
 
@@ -871,6 +909,10 @@ delegate_output!(FocusState);
 delegate_data_device!(FocusState);
 smithay::delegate_primary_selection!(FocusState);
 smithay::delegate_dmabuf!(FocusState);
+smithay::delegate_cursor_shape!(FocusState);
+// Required by `delegate_cursor_shape!` (it also covers tablet tools). We don't
+// support tablets, so the defaulted no-op is enough.
+impl smithay::wayland::tablet_manager::TabletSeatHandler for FocusState {}
 impl smithay::wayland::fractional_scale::FractionalScaleHandler for FocusState {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         // Advertise the output's integer scale as the preferred fractional scale

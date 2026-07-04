@@ -1942,6 +1942,13 @@ fn main() -> anyhow::Result<()> {
                             ad.set_dnd_h(height as f32);
                         }
                     }
+                    Event::CursorShape(code) => {
+                        // The focused client requested a cursor shape; publish it
+                        // so the hovered window shows it (the UI owns the pointer).
+                        if let Some(ui) = weak.upgrade() {
+                            ui.global::<AppData>().set_client_cursor(code as i32);
+                        }
+                    }
                 }
             }
             if dirty_windows {

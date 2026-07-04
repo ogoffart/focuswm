@@ -40,6 +40,9 @@ pub struct FocusState {
     pub idle_inhibitors: std::collections::HashSet<WlSurface>,
     /// Extra protocol globals kept alive for their lifetime.
     pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
+    /// `cursor-shape-v1`: lets clients request named cursor shapes we can map to
+    /// the host cursor (see `cursor_image`).
+    pub cursor_shape_state: smithay::wayland::cursor_shape::CursorShapeManagerState,
     pub single_pixel_buffer_state:
         smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
     pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,

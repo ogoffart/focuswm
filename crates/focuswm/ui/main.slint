@@ -287,6 +287,9 @@ component WindowView inherits Rectangle {
                 }
 
                 ta := TouchArea {
+                    // Show the cursor the focused client requested (text I-beam,
+                    // resize, grab, …) over its content.
+                    mouse-cursor: root.cursor-for(AppData.client-cursor);
                     // Coordinates are relative to the content area (below the
                     // title bar), matching the client's surface 1:1.
                     pointer-event(e) => {
@@ -357,6 +360,32 @@ component WindowView inherits Rectangle {
             : b == PointerEventButton.right ? 2
             : b == PointerEventButton.middle ? 3
             : 0
+    }
+
+    // Map a client-requested cursor code (from `cursor_shape_code` on the host)
+    // to a Slint cursor. Keep in sync with that Rust function.
+    pure function cursor-for(c: int) -> MouseCursor {
+        c == 1 ? MouseCursor.none
+            : c == 2 ? MouseCursor.pointer
+            : c == 3 ? MouseCursor.text
+            : c == 4 ? MouseCursor.crosshair
+            : c == 5 ? MouseCursor.move
+            : c == 6 ? MouseCursor.wait
+            : c == 7 ? MouseCursor.progress
+            : c == 8 ? MouseCursor.help
+            : c == 9 ? MouseCursor.not-allowed
+            : c == 10 ? MouseCursor.grab
+            : c == 11 ? MouseCursor.grabbing
+            : c == 12 ? MouseCursor.col-resize
+            : c == 13 ? MouseCursor.row-resize
+            : c == 14 ? MouseCursor.ew-resize
+            : c == 15 ? MouseCursor.ns-resize
+            : c == 16 ? MouseCursor.nesw-resize
+            : c == 17 ? MouseCursor.nwse-resize
+            : c == 18 ? MouseCursor.alias
+            : c == 19 ? MouseCursor.copy
+            : c == 20 ? MouseCursor.no-drop
+            : MouseCursor.default
     }
 
     // Keys that must be forwarded as keycodes rather than typed as text: control
