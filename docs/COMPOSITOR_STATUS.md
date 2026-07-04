@@ -72,38 +72,30 @@ Code path exists but is incomplete or a no-op.
   keyboard menu semantics can misbehave.
 - **Popup reposition is a no-op** (`reposition_request`) — combo-box / menu
   re-anchoring (`xdg_positioner` reposition) is dropped.
-- **Popup positioner constraints ignored** — `new_popup` applies the geometry
-  once but never the `constraint_adjustment` (flip/slide to stay on-screen), so
-  menus/tooltips near an edge can render off-screen or clipped.
-- **Client-initiated resize is a no-op** (`resize_request`) — dragging a window
-  edge from the *client* side does nothing; only the shell's own resize grips
-  work. (X11 `resize_request` is likewise empty.)
+- **Popup positioner constraints approximated** — the UI slides popups back
+  inside the content area (`clamp_popup`), but the positioner's `flip`/`resize`
+  adjustments aren't resolved, so a slid menu may cover its anchor.
 - **Layer-shell `exclusive_zone` and `keyboard_interactivity` ignored** — bars /
   panels don't reserve space (windows overlap them), and launchers / on-screen
   keyboards can't take keyboard focus.
-- **`wp_viewport` not applied** — advertised, but compositing reads the raw
-  buffer with no src-crop / dst-scale, so video players and scaled surfaces
-  render at buffer size instead of the requested size.
-- **`single-pixel-buffer` not composited** — advertised, but compositing only
-  handles shm + dmabuf, so solid-colour single-pixel surfaces are invisible.
+- **`wp_viewport` applied only on buffer commits** — crop/scale is applied when a
+  new buffer is attached; a commit that changes only the viewport (no new
+  buffer) doesn't re-run it until the next frame arrives.
 - **Fractional scale is cosmetic** — always advertises integer scale and blits at
   native pixels, so 125% / 150% HiDPI clients aren't actually scaled.
 - **dmabuf import is optimistic** — `dmabuf_imported` always reports success and
   advertises a guessed format set; the real import happens later on the UI
   thread and "may fall back", so some formats can yield blank/garbled windows.
-  No dmabuf-feedback.
+  No dmabuf-feedback. (dmabuf surfaces also bypass the viewport path.)
 - **Bitmap cursors fall back to the arrow** — `cursor_image` maps only *named*
   shapes (`cursor-shape-v1`); a client that sets a custom cursor *surface*
   (Blender, some games/editors, older GTK3) shows a plain arrow.
-- **Subsurface z-order ignored** — the surface tree is drawn in traversal order,
-  never consulting `place_above` / `place_below`, so overlapping subsurfaces can
-  stack wrong.
 - **No damage tracking** — every commit re-reads the whole buffer, re-composites
   the full tree, and ships a full RGBA copy over the channel; buffer/surface
   damage is never consulted. Correctness is fine; it's CPU/bandwidth-heavy.
-- **Coarse scroll** — pointer axis is always `Wheel` with no discrete/value120
-  steps, axis-stop, or source distinction, degrading touchpad smooth/kinetic and
-  horizontal scrolling.
+- **Scroll is wheel-flavoured only** — smooth values + value120 discrete steps
+  are sent, but the source is always `Wheel` (no finger/continuous), with no
+  axis-stop events, so touchpad kinetic scrolling doesn't coast.
 - **Fullscreen/maximize only resize** — they set the state bit and size to the
   output but don't hide panels/layers, retarget an output, or restack, so a
   "fullscreen" video can still be overlapped.
@@ -121,5 +113,10 @@ X11 startup panic (Tokio runtime), stale rendering between clicks, floating
 move/resize, non-US / AZERTY typing (keymap priming + hidden-TextInput IME
 path), terminal auto-detect fallback, drag-to-reorder + focus-follows-mouse,
 sidebar-width off-by-12px, Super-chords leaking as text, minimize-shortcut
-toggle, maximize honouring client max-size, `Instant` subtraction panic, and
-client cursor shapes (this doc's `cursor-shape-v1`).
+toggle, maximize honouring client max-size, `Instant` subtraction panic,
+client cursor shapes (`cursor-shape-v1`), **subsurface z-order** (was painted
+front-to-back — inverted, not just unordered), **single-pixel-buffer
+rendering**, **`wp_viewport` crop/scale** (shm path), **client-initiated
+interactive resize** (xdg + X11, driven by the UI like the resize grips),
+**popup slide-clamping** into the content area, and **value120 discrete
+scroll** steps.

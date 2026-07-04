@@ -251,16 +251,19 @@ fn composite_tree(
 ) -> Option<(u32, u32, Vec<u8>)> {
     use smithay::reexports::wayland_server::Resource;
     use smithay::wayland::compositor::{
-        with_surface_tree_downward, SubsurfaceCachedState, TraversalAction,
+        with_surface_tree_upward, SubsurfaceCachedState, TraversalAction,
     };
+    use smithay::wayland::viewporter::ViewportCachedState;
 
     cache.retain(|s, _| s.is_alive());
 
-    // (location, surface) for every surface with pixels, in render order
-    // (parent before child).
+    // (location, surface) for every surface with pixels, in render order.
+    // `upward` walks the tree deepest-first (back-to-front in stacking order,
+    // honouring subsurface place_above/below), which is painting order — the
+    // `downward` variant is front-to-back, for hit-testing.
     let mut draw: Vec<((i32, i32), WlSurface)> = Vec::new();
 
-    with_surface_tree_downward(
+    with_surface_tree_upward(
         root,
         (0i32, 0i32),
         |_surface, states, &location| {
@@ -288,8 +291,24 @@ fn composite_tree(
 
             match new_buffer {
                 Some(BufferAssignment::NewBuffer(buffer)) => {
-                    if let Ok(Some(frame)) = shm_with_buffer_contents(&buffer, read_shm) {
-                        cache.insert(surface.clone(), frame);
+                    let frame = shm_with_buffer_contents(&buffer, read_shm)
+                        .ok()
+                        .flatten()
+                        .or_else(|| {
+                            // Not shm: a wp_single_pixel_buffer is a 1x1 solid
+                            // colour (stretched by the viewport below).
+                            smithay::wayland::single_pixel_buffer::get_single_pixel_buffer(&buffer)
+                                .ok()
+                                .map(|spb| (1, 1, spb.rgba8888().to_vec()))
+                        });
+                    if let Some(frame) = frame {
+                        // wp_viewport: crop to `src` and scale to `dst`.
+                        let (src, dst) = {
+                            let mut guard = states.cached_state.get::<ViewportCachedState>();
+                            let v = guard.current();
+                            (v.src, v.dst)
+                        };
+                        cache.insert(surface.clone(), apply_viewport(frame, src, dst));
                     }
                     // We copied the pixels into an owned buffer above, so the
                     // client's shm buffer can be reused immediately. Without this
@@ -347,6 +366,48 @@ fn read_shm(ptr: *const u8, len: usize, data: BufferData) -> Option<(u32, u32, V
         format,
     );
     Some((data.width as u32, data.height as u32, rgba))
+}
+
+/// Apply a `wp_viewport` to a decoded RGBA frame: crop to the (fractional)
+/// `src` rectangle, then scale to the `dst` size, nearest-neighbour. Without a
+/// viewport the frame passes through untouched. Degenerate rectangles fall back
+/// to the previous stage rather than producing an empty frame.
+fn apply_viewport(
+    frame: (u32, u32, Vec<u8>),
+    src: Option<smithay::utils::Rectangle<f64, smithay::utils::Logical>>,
+    dst: Option<smithay::utils::Size<i32, smithay::utils::Logical>>,
+) -> (u32, u32, Vec<u8>) {
+    let (w, h, pixels) = frame;
+    if src.is_none() && dst.is_none() {
+        return (w, h, pixels);
+    }
+    // Crop region in buffer pixels (defaults to the whole buffer).
+    let (sx, sy, sw, sh) = match src {
+        Some(r) if r.size.w > 0.0 && r.size.h > 0.0 => (r.loc.x, r.loc.y, r.size.w, r.size.h),
+        _ => (0.0, 0.0, w as f64, h as f64),
+    };
+    // Output size (defaults to the integer crop size, per the viewport spec).
+    let (dw, dh) = match dst {
+        Some(s) if s.w > 0 && s.h > 0 => (s.w as u32, s.h as u32),
+        _ => (sw.round().max(1.0) as u32, sh.round().max(1.0) as u32),
+    };
+    if dw == w && dh == h && sx == 0.0 && sy == 0.0 && sw == w as f64 && sh == h as f64 {
+        return (w, h, pixels); // identity
+    }
+    let mut out = vec![0u8; dw as usize * dh as usize * 4];
+    for oy in 0..dh {
+        // Sample the centre of each destination pixel within the crop region.
+        let fy = sy + (oy as f64 + 0.5) * sh / dh as f64;
+        let by = (fy as i64).clamp(0, h as i64 - 1) as usize;
+        for ox in 0..dw {
+            let fx = sx + (ox as f64 + 0.5) * sw / dw as f64;
+            let bx = (fx as i64).clamp(0, w as i64 - 1) as usize;
+            let s = (by * w as usize + bx) * 4;
+            let d = (oy as usize * dw as usize + ox as usize) * 4;
+            out[d..d + 4].copy_from_slice(&pixels[s..s + 4]);
+        }
+    }
+    (dw, dh, out)
 }
 
 fn read_title(surface: &WlSurface) -> String {
@@ -475,11 +536,20 @@ impl XdgShellHandler for FocusState {
 
     fn resize_request(
         &mut self,
-        _surface: ToplevelSurface,
+        surface: ToplevelSurface,
         _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
         _serial: smithay::utils::Serial,
-        _edges: xdg_toplevel::ResizeEdge,
+        edges: xdg_toplevel::ResizeEdge,
     ) {
+        // A client (usually client-side-decorated) asked for an interactive
+        // resize from the in-flight pointer drag. The UI owns window geometry,
+        // so hand it the request; it drives the resize like its own edge grips.
+        if let Some(entry) = self.windows.get(surface.wl_surface()) {
+            let edges = resize_edges_mask(edges);
+            if edges != 0 {
+                let _ = self.events.send(Event::ResizeRequested { id: entry.id, edges });
+            }
+        }
     }
 
     // focuswm presents each task's windows filling the content area, so
@@ -772,6 +842,23 @@ impl SeatHandler for FocusState {
     }
 }
 
+/// Map an `xdg_toplevel` resize edge to the UI's edge bitmask
+/// (1=left, 2=right, 4=top, 8=bottom — same encoding as the resize grips).
+fn resize_edges_mask(edges: xdg_toplevel::ResizeEdge) -> u32 {
+    use xdg_toplevel::ResizeEdge as E;
+    match edges {
+        E::Left => 1,
+        E::Right => 2,
+        E::Top => 4,
+        E::Bottom => 8,
+        E::TopLeft => 4 | 1,
+        E::TopRight => 4 | 2,
+        E::BottomLeft => 8 | 1,
+        E::BottomRight => 8 | 2,
+        _ => 0, // None / unknown: nothing to drive
+    }
+}
+
 /// Map a cursor request to a small stable code shared with the UI (see
 /// `cursor-for` in `main.slint`). 0 = default arrow.
 fn cursor_shape_code(status: &smithay::input::pointer::CursorImageStatus) -> u32 {
@@ -998,6 +1085,50 @@ mod tests {
         let (b, off) = crop_to_geometry(img(), Some(geo));
         assert_eq!((b.0, b.1), (2, 2));
         assert_eq!(off, (0, 0));
+    }
+
+    #[test]
+    fn viewport_passthrough_without_state() {
+        let frame = (2u32, 2u32, vec![0u8; 16]);
+        let out = super::apply_viewport(frame.clone(), None, None);
+        assert_eq!(out, frame);
+    }
+
+    #[test]
+    fn viewport_scales_to_dst() {
+        // 2x1 buffer: left pixel = 1s, right pixel = 2s; stretch to 4x1.
+        let frame = (2u32, 1u32, vec![1, 1, 1, 1, 2, 2, 2, 2]);
+        let dst = smithay::utils::Size::from((4, 1));
+        let (w, h, px) = super::apply_viewport(frame, None, Some(dst));
+        assert_eq!((w, h), (4, 1));
+        // Nearest-neighbour: two left samples from pixel 0, two right from pixel 1.
+        assert_eq!(px, vec![1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn viewport_crops_src() {
+        // 2x2 buffer with pixel value = index; crop the right column.
+        let (_, _, base) = img();
+        let src = smithay::utils::Rectangle::<f64, smithay::utils::Logical>::new(
+            (1.0, 0.0).into(),
+            (1.0, 2.0).into(),
+        );
+        let (w, h, px) = super::apply_viewport((2, 2, base), Some(src), None);
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(px, vec![1, 1, 1, 1, 3, 3, 3, 3]);
+    }
+
+    #[test]
+    fn resize_edges_mask_maps_all_edges() {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as E;
+        use super::resize_edges_mask;
+        assert_eq!(resize_edges_mask(E::Left), 1);
+        assert_eq!(resize_edges_mask(E::Right), 2);
+        assert_eq!(resize_edges_mask(E::Top), 4);
+        assert_eq!(resize_edges_mask(E::Bottom), 8);
+        assert_eq!(resize_edges_mask(E::BottomRight), 10);
+        assert_eq!(resize_edges_mask(E::TopLeft), 5);
+        assert_eq!(resize_edges_mask(E::None), 0);
     }
 
     #[test]

@@ -51,6 +51,10 @@ pub enum Event {
     /// client-side title bar → `xdg_toplevel.move`). The UI then drives the
     /// floating move from the ongoing pointer drag.
     MoveRequested(WindowId),
+    /// A window asked to be resized interactively (the user is dragging a
+    /// client-side edge/corner). `edges` is the UI bitmask 1=left, 2=right,
+    /// 4=top, 8=bottom; the UI drives the resize from the ongoing pointer drag.
+    ResizeRequested { id: WindowId, edges: u32 },
     /// A client-side-decorated window asked to be minimized (its own header-bar
     /// minimize button → `xdg_toplevel.set_minimized`). The UI applies it.
     MinimizeRequested(WindowId),
@@ -167,6 +171,11 @@ impl std::fmt::Debug for Event {
             Event::WindowAdded(id) => f.debug_tuple("WindowAdded").field(id).finish(),
             Event::WindowRemoved(id) => f.debug_tuple("WindowRemoved").field(id).finish(),
             Event::MoveRequested(id) => f.debug_tuple("MoveRequested").field(id).finish(),
+            Event::ResizeRequested { id, edges } => f
+                .debug_struct("ResizeRequested")
+                .field("id", id)
+                .field("edges", edges)
+                .finish(),
             Event::MinimizeRequested(id) => {
                 f.debug_tuple("MinimizeRequested").field(id).finish()
             }

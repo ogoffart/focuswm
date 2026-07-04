@@ -164,10 +164,29 @@ impl XwmHandler for FocusState {
     fn resize_request(
         &mut self,
         _xwm: XwmId,
-        _window: X11Surface,
+        window: X11Surface,
         _button: u32,
-        _resize_edge: ResizeEdge,
+        resize_edge: ResizeEdge,
     ) {
+        // Mirror the xdg path: hand the interactive resize to the UI, which
+        // drives it from the in-flight pointer drag (same edge bitmask as the
+        // resize grips: 1=left, 2=right, 4=top, 8=bottom).
+        use ResizeEdge as E;
+        let edges = match resize_edge {
+            E::Left => 1,
+            E::Right => 2,
+            E::Top => 4,
+            E::Bottom => 8,
+            E::TopLeft => 4 | 1,
+            E::TopRight => 4 | 2,
+            E::BottomLeft => 8 | 1,
+            E::BottomRight => 8 | 2,
+        };
+        if let Some(wl) = window.wl_surface() {
+            if let Some(entry) = self.x11_windows.get(&wl) {
+                let _ = self.events.send(Event::ResizeRequested { id: entry.id, edges });
+            }
+        }
     }
 
     fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {

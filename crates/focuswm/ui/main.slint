@@ -299,13 +299,21 @@ component WindowView inherits Rectangle {
                     // Show the cursor the focused client requested (text I-beam,
                     // resize, grab, …) over its content.
                     mouse-cursor: root.cursor-for(AppData.client-cursor);
+                    // Last pointer position seen during a client-initiated resize,
+                    // so each move applies only its own delta (per-event deltas
+                    // stay correct whichever edge moves the frame under us).
+                    property <length> rlast-x;
+                    property <length> rlast-y;
                     // Coordinates are relative to the content area (below the
                     // title bar), matching the client's surface 1:1.
                     pointer-event(e) => {
                         fs.focus();
                         if e.kind == PointerEventKind.down {
-                            // Clear any stale move flag from a previous drag.
+                            // Clear any stale move/resize flags from a previous drag.
                             AppData.moving-window = -1;
+                            AppData.resizing-window = -1;
+                            self.rlast-x = ta.mouse-x;
+                            self.rlast-y = ta.mouse-y;
                             Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), true);
                         } else if (e.kind == PointerEventKind.up && AppData.dnd-active) {
                             // A client drag-and-drop is in progress: drop on the
@@ -320,12 +328,14 @@ component WindowView inherits Rectangle {
                             // snap into the zone under the cursor on release.
                             if (AppData.moving-window == tile.id) {
                                 AppData.moving-window = -1;
+                                AppData.resizing-window = -1;
                                 root.interacting = false;
                                 Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
                                 root.snap-drop(tile.id, ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y);
                                 Logic.focus-window(tile.id);
                             } else {
                                 AppData.moving-window = -1;
+                                AppData.resizing-window = -1;
                                 root.interacting = false;
                                 Logic.pointer-button(tile.id, ta.mouse-x, ta.mouse-y, root.btn-code(e.button), false);
                                 // Raise this window above the others it may overlap.
@@ -342,6 +352,14 @@ component WindowView inherits Rectangle {
                                 root.interacting = true;
                                 Logic.move-window(tile.id, ta.mouse-x - ta.pressed-x, ta.mouse-y - ta.pressed-y);
                                 root.snap-preview(ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y);
+                            } else if (AppData.resizing-window == tile.id && ta.pressed) {
+                                // Client-initiated resize (it grabbed its own
+                                // edge/corner): drive the frame like our grips,
+                                // applying this event's delta only.
+                                root.interacting = true;
+                                Logic.resize-window(tile.id, AppData.resizing-edges, ta.mouse-x - self.rlast-x, ta.mouse-y - self.rlast-y);
+                                self.rlast-x = ta.mouse-x;
+                                self.rlast-y = ta.mouse-y;
                             } else {
                                 Logic.pointer-moved(tile.id, ta.mouse-x, ta.mouse-y);
                             }

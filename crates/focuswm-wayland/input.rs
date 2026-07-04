@@ -350,12 +350,17 @@ impl FocusState {
             return;
         };
         let time = self.millis_since_start();
+        // Approximate one wheel notch as 15 logical px for the discrete
+        // (value120) stream — clients that scroll by lines (terminals, lists)
+        // need it in addition to the smooth value.
+        const NOTCH_PX: f64 = 15.0;
+        let v120 = |d: f64| ((d / NOTCH_PX) * 120.0).round() as i32;
         let mut frame = AxisFrame::new(time).source(AxisSource::Wheel);
         if dx != 0.0 {
-            frame = frame.value(Axis::Horizontal, dx);
+            frame = frame.value(Axis::Horizontal, dx).v120(Axis::Horizontal, v120(dx));
         }
         if dy != 0.0 {
-            frame = frame.value(Axis::Vertical, dy);
+            frame = frame.value(Axis::Vertical, dy).v120(Axis::Vertical, v120(dy));
         }
         pointer.axis(self, frame);
         pointer.frame(self);

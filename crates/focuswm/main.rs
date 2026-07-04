@@ -1666,6 +1666,16 @@ fn main() -> anyhow::Result<()> {
                             ui.global::<AppData>().set_moving_window(id.0 as i32);
                         }
                     }
+                    Event::ResizeRequested { id, edges } => {
+                        // The client grabbed one of its own (client-side) edges.
+                        // Flag the window + edges so the view drives the resize
+                        // from the in-flight pointer drag, like its own grips.
+                        if let Some(ui) = weak.upgrade() {
+                            let ad = ui.global::<AppData>();
+                            ad.set_resizing_window(id.0 as i32);
+                            ad.set_resizing_edges(edges as i32);
+                        }
+                    }
                     Event::MinimizeRequested(id) => {
                         // A client-side-decorated window (e.g. GNOME Terminal's
                         // header-bar button) asked to be minimized. Apply the same
@@ -1910,7 +1920,16 @@ fn main() -> anyhow::Result<()> {
                     } => {
                         let mut s = shared.borrow_mut();
                         let (px, py) = popup_origin(&s, &popups_model, parent);
-                        let (x, y) = (px + ox as f32, py + oy as f32);
+                        // Slide the popup back inside the content area if the
+                        // positioner would put it off-screen (a poor man's
+                        // xdg_positioner constraint_adjustment).
+                        let (x, y) = clamp_popup(
+                            px + ox as f32,
+                            py + oy as f32,
+                            width as f32,
+                            height as f32,
+                            s.content,
+                        );
                         if let Some(&row) = s.popup_rows.get(&id.0) {
                             if let Some(mut t) = popups_model.row_data(row) {
                                 t.x = x;
@@ -2263,6 +2282,17 @@ fn main() -> anyhow::Result<()> {
     }
     persist::save(&tasks.borrow());
     Ok(())
+}
+
+/// Slide a popup's top-left so a `w`×`h` popup stays inside the `(cw, ch)`
+/// content area (approximating `xdg_positioner`'s slide constraint adjustment,
+/// which we don't resolve compositor-side because only the UI knows window
+/// positions). Oversized popups pin to the top/left edge.
+fn clamp_popup(x: f32, y: f32, w: f32, h: f32, (cw, ch): (f32, f32)) -> (f32, f32) {
+    (
+        x.min(cw - w).max(0.0),
+        y.min(ch - h).max(0.0),
+    )
 }
 
 /// Where a popup's top-left sits in the content area: its parent's origin plus
@@ -2815,6 +2845,19 @@ mod tests {
         assert_eq!(special_keycode("~"), None);
         assert_eq!(special_keycode("é"), None);
         assert_eq!(special_keycode("1"), None);
+    }
+
+    #[test]
+    fn popup_clamped_inside_content() {
+        let area = (1000.0, 700.0);
+        // Fits: untouched.
+        assert_eq!(clamp_popup(100.0, 100.0, 200.0, 150.0, area), (100.0, 100.0));
+        // Overflows right/bottom: slides back in.
+        assert_eq!(clamp_popup(950.0, 650.0, 200.0, 150.0, area), (800.0, 550.0));
+        // Negative: pins to the origin.
+        assert_eq!(clamp_popup(-30.0, -10.0, 200.0, 150.0, area), (0.0, 0.0));
+        // Bigger than the area: pins to the top-left rather than going negative.
+        assert_eq!(clamp_popup(50.0, 50.0, 1200.0, 800.0, area), (0.0, 0.0));
     }
 
     #[test]
