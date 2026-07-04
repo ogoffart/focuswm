@@ -983,4 +983,136 @@ mod tests {
         let c = list.add_task("C", "work");
         assert_eq!(c, TaskId(2));
     }
+
+    #[test]
+    fn github_link_persists_through_json() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.get_mut(a).unwrap().github = Some(GithubLink {
+            slug: "ogoffart/focuswm".into(),
+            number: 42,
+            title: "Fix it".into(),
+            url: "https://github.com/ogoffart/focuswm/pull/42".into(),
+            last_seen: Some(1_700_000_000),
+        });
+        let json = serde_json::to_string(&list).unwrap();
+        let back: TaskList = serde_json::from_str(&json).unwrap();
+        let link = back.get(a).unwrap().github.as_ref().unwrap();
+        assert_eq!(link.number, 42);
+        assert_eq!(link.slug, "ogoffart/focuswm");
+        assert_eq!(link.last_seen, Some(1_700_000_000));
+    }
+
+    #[test]
+    fn tasklist_json_round_trip_preserves_tasks_settings_and_log() {
+        let mut list = TaskList::new();
+        list.set_date("2026-01-02");
+        let a = list.add_task("A", "work");
+        list.add_task("B", "personal");
+        list.set_active(a, 0);
+        list.flush(600); // 10 min on A
+        list.record_repo("~/code/x");
+        let mut s = list.settings().clone();
+        s.terminal = "foot".into();
+        list.set_settings(s);
+
+        let json = serde_json::to_string(&list).unwrap();
+        let mut back: TaskList = serde_json::from_str(&json).unwrap();
+        back.reindex_after_load();
+
+        assert_eq!(back.tasks().len(), 2);
+        assert_eq!(back.settings().terminal, "foot");
+        assert_eq!(back.repo_history(), &["~/code/x".to_string()]);
+        // The 10 minutes on A survived in the time log.
+        let agg = back.time_log().aggregate("2026-01-01", "2026-01-31");
+        assert_eq!(agg.total, 600);
+    }
+
+    #[test]
+    fn record_repo_dedups_moves_to_front_and_caps_at_twenty() {
+        let mut list = TaskList::new();
+        for i in 0..25 {
+            list.record_repo(&format!("repo-{i}"));
+        }
+        assert_eq!(list.repo_history().len(), 20, "history is capped at 20");
+        assert_eq!(list.repo_history()[0], "repo-24", "most recent is first");
+        // Re-recording an existing entry moves it to the front without growing.
+        list.record_repo("repo-10");
+        assert_eq!(list.repo_history()[0], "repo-10");
+        assert_eq!(list.repo_history().len(), 20);
+        // Empty paths are ignored.
+        list.record_repo("");
+        assert_eq!(list.repo_history().len(), 20);
+    }
+
+    #[test]
+    fn removing_a_non_active_task_keeps_the_active_one() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        let b = list.add_task("B", "work");
+        list.set_active(a, 0);
+        let w = WindowId(1);
+        list.assign_window(w);
+        list.remove_task(b, 10);
+        assert_eq!(list.active(), Some(a), "active task is untouched");
+        assert_eq!(list.tasks().len(), 1);
+        assert_eq!(list.task_of_window(w), Some(a), "A's window survives");
+    }
+
+    #[test]
+    fn switch_to_desktop0_flushes_time_onto_previous_task() {
+        let mut list = TaskList::new();
+        list.set_date("2026-03-03");
+        let a = list.add_task("A", "work");
+        list.set_active(a, 100);
+        list.set_scratch_active(400); // 300s on A, then desktop 0
+        assert_eq!(list.active(), None);
+        let agg = list.time_log().aggregate("2026-03-01", "2026-03-31");
+        assert_eq!(agg.total, 300);
+        // No time accrues while desktop 0 is active.
+        list.flush(1000);
+        let agg = list.time_log().aggregate("2026-03-01", "2026-03-31");
+        assert_eq!(agg.total, 300);
+    }
+
+    #[test]
+    fn aggregate_groups_by_category_and_project_sorted_desc() {
+        let mut log = TimeLog::default();
+        log.record("2026-04-01", TaskId(1), "Alpha", "work", 100);
+        log.record("2026-04-01", TaskId(2), "Beta", "work", 300);
+        log.record("2026-04-02", TaskId(3), "Gamma", "learning", 200);
+        let agg = log.aggregate("2026-04-01", "2026-04-30");
+        assert_eq!(agg.total, 600);
+        // Categories: work=400, learning=200 (sorted by seconds desc).
+        assert_eq!(agg.by_category, vec![("work".into(), 400), ("learning".into(), 200)]);
+        // Projects sorted desc: Beta=300, Gamma=200, Alpha=100.
+        assert_eq!(
+            agg.by_project,
+            vec![("Beta".into(), 300), ("Gamma".into(), 200), ("Alpha".into(), 100)]
+        );
+    }
+
+    #[test]
+    fn time_log_keeps_denormalized_project_after_task_rename() {
+        let mut list = TaskList::new();
+        list.set_date("2026-05-05");
+        let a = list.add_task("OldName", "work");
+        list.set_active(a, 0);
+        list.flush(120);
+        // Rename the task; the already-logged interval keeps the old project name.
+        list.set_task_props(a, "NewName", "work", "");
+        let agg = list.time_log().aggregate("2026-05-01", "2026-05-31");
+        assert_eq!(agg.by_project, vec![("OldName".into(), 120)]);
+    }
+
+    #[test]
+    fn set_task_props_updates_name_category_and_colour() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.set_task_props(a, "Renamed", "personal", "#ff0000");
+        let t = list.get(a).unwrap();
+        assert_eq!(t.name, "Renamed");
+        assert_eq!(t.category, "personal");
+        assert_eq!(t.color, "#ff0000");
+    }
 }

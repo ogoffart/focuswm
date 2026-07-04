@@ -164,4 +164,48 @@ mod tests {
         assert_eq!(&out[0..8], &[3, 2, 1, 4, 7, 6, 5, 8]);
         assert_eq!(&out[8..16], &[0, 0, 0, 0, 0, 0, 0, 0]);
     }
+
+    #[test]
+    fn blit_fully_offscreen_is_a_noop() {
+        let mut dst = vec![0u8; 4 * 4]; // 2x2 opaque-nothing
+        let src = [9u8, 9, 9, 255];
+        // Far to the right / below and far to the top-left: nothing lands.
+        blit_over(&mut dst, 2, 2, 5, 5, &src, 1, 1);
+        blit_over(&mut dst, 2, 2, -5, -5, &src, 1, 1);
+        assert!(dst.iter().all(|&b| b == 0), "no pixels should be written");
+    }
+
+    #[test]
+    fn blit_partially_clipped_writes_only_the_visible_corner() {
+        // 2x2 source dropped at (1,1) into a 2x2 dest: only its top-left pixel
+        // lands, at dest (1,1).
+        let mut dst = vec![0u8; 2 * 2 * 4];
+        let src = [
+            1, 2, 3, 255, 4, 5, 6, 255, // row 0
+            7, 8, 9, 255, 10, 11, 12, 255, // row 1
+        ];
+        blit_over(&mut dst, 2, 2, 1, 1, &src, 2, 2);
+        // dest pixel (1,1) is index (1*2 + 1)*4 = 12.
+        assert_eq!(&dst[12..16], &[1, 2, 3, 255]);
+        // The other three dest pixels are untouched.
+        assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&dst[4..8], &[0, 0, 0, 0]);
+        assert_eq!(&dst[8..12], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn blit_skips_fully_transparent_source_pixels() {
+        let mut dst = vec![50u8; 4]; // one opaque-ish grey pixel
+        let src = [200u8, 200, 200, 0]; // fully transparent
+        blit_over(&mut dst, 1, 1, 0, 0, &src, 1, 1);
+        assert_eq!(dst, vec![50, 50, 50, 50], "transparent source leaves dest as-is");
+    }
+
+    #[test]
+    fn xrgb_conversion_across_multiple_pixels() {
+        // Two BGRX pixels; alpha is forced opaque regardless of the X byte.
+        let src = [10u8, 20, 30, 0, 40, 50, 60, 7];
+        let out = convert_to_rgba(&src, 2, 1, 8, ShmFormat::Xrgb8888);
+        assert_eq!(out, vec![30, 20, 10, 255, 60, 50, 40, 255]);
+    }
 }
