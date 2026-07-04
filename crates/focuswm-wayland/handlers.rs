@@ -999,4 +999,23 @@ mod tests {
         assert_eq!((b.0, b.1), (2, 2));
         assert_eq!(off, (0, 0));
     }
+
+    #[test]
+    fn cursor_shape_codes_map_named_and_hidden() {
+        use super::cursor_shape_code;
+        use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+        let named = |i| cursor_shape_code(&CursorImageStatus::Named(i));
+        assert_eq!(cursor_shape_code(&CursorImageStatus::Hidden), 1);
+        assert_eq!(named(CursorIcon::Pointer), 2);
+        assert_eq!(named(CursorIcon::Text), 3);
+        assert_eq!(named(CursorIcon::Grab), 10);
+        // The four resize axes collapse onto the bidirectional Slint cursors.
+        assert_eq!(named(CursorIcon::EwResize), 14);
+        assert_eq!(named(CursorIcon::EResize), 14);
+        assert_eq!(named(CursorIcon::WResize), 14);
+        assert_eq!(named(CursorIcon::NsResize), 15);
+        // Default and unmapped shapes fall back to the default arrow (0).
+        assert_eq!(named(CursorIcon::Default), 0);
+        assert_eq!(named(CursorIcon::ZoomIn), 0);
+    }
 }
