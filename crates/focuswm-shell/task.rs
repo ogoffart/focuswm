@@ -153,10 +153,25 @@ pub struct TaskList {
     /// User settings (terminal/browser commands, categories). Persisted.
     #[serde(default)]
     settings: Settings,
+    /// Snapshot of the running apps (per desktop) for session restore, updated
+    /// while running and on exit; respawned on the next start. Persisted.
+    #[serde(default)]
+    session: Vec<SessionApp>,
     /// The current local calendar day ("YYYY-MM-DD"), supplied by the host via
     /// [`set_date`]; used to attribute committed intervals in the time log.
     #[serde(default, skip)]
     current_date: String,
+}
+
+/// One running app in the session snapshot: its command line, working
+/// directory, and the desktop its window was on (`None` = desktop 0).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionApp {
+    pub task: Option<TaskId>,
+    /// The client process's argv, read from /proc at window creation.
+    pub cmd: Vec<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 impl TaskList {
@@ -342,6 +357,17 @@ impl TaskList {
     /// Replace the user settings.
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
+    }
+
+    /// Replace the session snapshot (the running apps to restore on next start).
+    pub fn set_session(&mut self, apps: Vec<SessionApp>) {
+        self.session = apps;
+    }
+
+    /// Take the persisted session snapshot for restoring, leaving it empty (it
+    /// is rebuilt from the live windows as they map).
+    pub fn take_session(&mut self) -> Vec<SessionApp> {
+        std::mem::take(&mut self.session)
     }
 
     /// Assign a newly mapped window to the active desktop (the active task, or
@@ -959,6 +985,29 @@ mod tests {
         assert_eq!(list.settings().terminal, "foot");
         assert_eq!(list.settings().categories, vec!["x".to_string()]);
         assert!(!list.settings().focus_follows_mouse);
+    }
+
+    #[test]
+    fn session_snapshot_persists_and_takes_once() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.set_session(vec![
+            SessionApp { task: Some(a), cmd: vec!["foot".into()], cwd: Some("/tmp".into()) },
+            SessionApp { task: None, cmd: vec!["firefox".into()], cwd: None },
+        ]);
+        // Survives serialization (the persist path) including the task ids.
+        let json = serde_json::to_string(&list).unwrap();
+        let mut loaded: TaskList = serde_json::from_str(&json).unwrap();
+        let apps = loaded.take_session();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].task, Some(a));
+        assert_eq!(apps[0].cmd, vec!["foot".to_string()]);
+        assert_eq!(apps[1].task, None);
+        // Taking leaves it empty (it's rebuilt from live windows afterwards).
+        assert!(loaded.take_session().is_empty());
+        // Old persisted files without the field deserialize to no session.
+        let bare: TaskList = serde_json::from_str(r#"{"tasks":[]}"#).unwrap();
+        assert!(bare.session.is_empty());
     }
 
     #[test]

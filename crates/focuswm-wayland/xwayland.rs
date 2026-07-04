@@ -77,8 +77,11 @@ impl FocusState {
             return;
         }
         let id = self.allocate_window_id();
+        // _NET_WM_PID, for session restore (the shared XWayland client's own
+        // credentials would be XWayland's pid, not the app's).
+        let pid = surface.pid();
         self.x11_windows.insert(wl, X11Entry { id, surface });
-        let _ = self.events.send(Event::WindowAdded(id));
+        let _ = self.events.send(Event::WindowAdded { id, pid });
     }
 
     fn unregister_x11(&mut self, surface: &X11Surface) {

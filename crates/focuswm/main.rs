@@ -74,6 +74,9 @@ struct WinMeta {
     min_h: i32,
     max_w: i32,
     max_h: i32,
+    /// The client process behind this window — `(pid, argv, cwd)` read from
+    /// /proc when the window mapped — for the session-restore snapshot.
+    proc: Option<(u32, Vec<String>, Option<String>)>,
 }
 
 impl WinMeta {
@@ -312,6 +315,16 @@ fn main() -> anyhow::Result<()> {
     // Holds focuswm's private D-Bus daemon (started once the compositor is
     // ready) alive for the lifetime of the session.
     let dbus_daemon: Rc<RefCell<Option<std::process::Child>>> = Rc::new(RefCell::new(None));
+    // Session restore: apps recorded by the previous run. They're respawned
+    // once the compositor (and, for X11 apps, XWayland) is up, and matched back
+    // to their desktops by command line as their windows map.
+    let pending_session: Rc<RefCell<Vec<focuswm_shell::SessionApp>>> =
+        Rc::new(RefCell::new(tasks.borrow_mut().take_session()));
+    let session_spawned = Rc::new(std::cell::Cell::new(false));
+    let session_ready_at: Rc<std::cell::Cell<Option<Instant>>> =
+        Rc::new(std::cell::Cell::new(None));
+    let session_match_until: Rc<std::cell::Cell<Option<Instant>>> =
+        Rc::new(std::cell::Cell::new(None));
     let start = Instant::now();
     let now_secs = move || start.elapsed().as_secs();
 
@@ -1623,6 +1636,10 @@ fn main() -> anyhow::Result<()> {
         let focused = focused.clone();
         let cmd_tx = cmd_tx.clone();
         let weak = weak.clone();
+        let pending_session = pending_session.clone();
+        let session_spawned = session_spawned.clone();
+        let session_ready_at = session_ready_at.clone();
+        let session_match_until = session_match_until.clone();
         // When client damage (a new buffer) last arrived; we keep compositing for
         // a short tail afterwards, then let the window idle. Initialised to a
         // second ago so the desktop idles immediately — via `checked_sub` so it
@@ -1659,23 +1676,47 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                         log::info!("compositor ready: {env:?}");
+                        session_ready_at.set(Some(Instant::now()));
                     }
-                    Event::WindowAdded(id) => {
+                    Event::WindowAdded { id, pid } => {
                         // Give the new window a floating frame and size its client
                         // surface to that frame's content area.
                         let (cw, ch) = shared.borrow().content;
                         let geom = default_geom(id.0, cw, ch);
+                        // Record the client's command line for session restore.
+                        let proc_info = pid.and_then(read_proc_cmdline);
                         let decorated = {
                             let mut s = shared.borrow_mut();
                             let meta = s.meta.entry(id.0).or_default();
                             meta.geom = geom;
+                            meta.proc =
+                                proc_info.clone().map(|(cmd, cwd)| (pid.unwrap_or(0), cmd, cwd));
                             meta.decorated
                         };
                         let (w, h) = geom.content_size(decorated);
                         let _ = cmd_tx.send(Command::ResizeWindow { id, width: w, height: h });
                         tasks.borrow_mut().assign_window(id);
-                        *focused.borrow_mut() = Some(id);
-                        let _ = cmd_tx.send(Command::FocusWindow(id));
+                        // Session restore: a window whose client argv matches a
+                        // pending entry from the previous session goes back to
+                        // that entry's desktop instead of the active one.
+                        if let Some((cmd, _)) = &proc_info {
+                            let target = {
+                                let mut pending = pending_session.borrow_mut();
+                                pending
+                                    .iter()
+                                    .position(|a| &a.cmd == cmd)
+                                    .map(|i| pending.remove(i).task)
+                            };
+                            if let Some(task) = target {
+                                tasks.borrow_mut().move_window_to(id, task);
+                            }
+                        }
+                        // Focus it only if it's actually on the visible desktop
+                        // (a restored window may have gone somewhere else).
+                        if tasks.borrow().is_visible(id) {
+                            *focused.borrow_mut() = Some(id);
+                            let _ = cmd_tx.send(Command::FocusWindow(id));
+                        }
                         dirty_windows = true;
                     }
                     Event::MoveRequested(id) => {
@@ -2189,6 +2230,33 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Session restore: respawn the previous session's apps once the
+            // compositor is ready — as soon as XWayland is up (so X11 apps
+            // restore too), or after a short grace period if it never comes.
+            if !session_spawned.get() && !pending_session.borrow().is_empty() {
+                let env = spawn_env.borrow();
+                let ready = !env.wayland_display.is_empty();
+                let x_up = env.x_display.is_some();
+                drop(env);
+                let waited = session_ready_at
+                    .get()
+                    .is_some_and(|t| t.elapsed() > Duration::from_secs(3));
+                if ready && (x_up || waited) {
+                    session_spawned.set(true);
+                    // Windows mapping within this window are routed back to
+                    // their desktops; afterwards matching stops.
+                    session_match_until.set(Some(Instant::now() + Duration::from_secs(60)));
+                    for app in pending_session.borrow().iter() {
+                        log::info!("session restore: spawning {:?}", app.cmd);
+                        spawn_client(&app.cmd, &spawn_env.borrow(), app.cwd.as_deref(), &toast_tx);
+                    }
+                }
+            }
+            if session_match_until.get().is_some_and(|t| Instant::now() > t) {
+                session_match_until.set(None);
+                pending_session.borrow_mut().clear();
+            }
+
             // Keep the compositor output sized to the host window's content area.
             if let Some(ui) = weak.upgrade() {
                 // Floating frames keep their size; re-clamp them when the content
@@ -2246,6 +2314,7 @@ fn main() -> anyhow::Result<()> {
         let refresh_tasks = refresh_tasks.clone();
         let now_secs = now_secs.clone();
         let last_activity = last_activity.clone();
+        let pending_session = pending_session.clone();
         let weak = weak.clone();
         move || {
             let now = now_secs();
@@ -2269,6 +2338,11 @@ fn main() -> anyhow::Result<()> {
                 }
             };
             refresh_tasks();
+            // Refresh the session-restore snapshot so a crash loses at most the
+            // last few seconds of app comings-and-goings.
+            let snap =
+                session_snapshot(&tasks.borrow(), &shared.borrow(), &pending_session.borrow());
+            tasks.borrow_mut().set_session(snap);
             persist::save(&tasks.borrow());
             // Raise the lock screen when we first go idle.
             if became_idle {
@@ -2306,12 +2380,15 @@ fn main() -> anyhow::Result<()> {
 
     ui.run()?;
 
-    // Persist a final time snapshot on exit.
+    // Persist a final time snapshot + the session (running apps per desktop,
+    // respawned on the next start) on exit.
     {
         let mut list = tasks.borrow_mut();
         list.set_date(&today());
         list.flush(now_secs());
     }
+    let snap = session_snapshot(&tasks.borrow(), &shared.borrow(), &pending_session.borrow());
+    tasks.borrow_mut().set_session(snap);
     persist::save(&tasks.borrow());
     Ok(())
 }
@@ -2591,6 +2668,50 @@ fn sync_output_size(
         });
     }
     changed
+}
+
+/// The command line (argv) and working directory of a process, from /proc.
+/// `None` when the process is gone or unreadable (or has an empty argv).
+fn read_proc_cmdline(pid: u32) -> Option<(Vec<String>, Option<String>)> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let cmd: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    if cmd.is_empty() {
+        return None;
+    }
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned());
+    Some((cmd, cwd))
+}
+
+/// Build the session-restore snapshot: one entry per running client process
+/// (deduped by pid — one app can own several windows), tagged with the desktop
+/// its window is on. Entries from the previous session that haven't re-mapped
+/// yet are carried over so a quick quit-after-restart doesn't lose them.
+fn session_snapshot(
+    list: &TaskList,
+    shared: &Shared,
+    still_pending: &[focuswm_shell::SessionApp],
+) -> Vec<focuswm_shell::SessionApp> {
+    let mut seen = std::collections::HashSet::new();
+    let mut apps = Vec::new();
+    for (id, meta) in &shared.meta {
+        if let Some((pid, cmd, cwd)) = &meta.proc {
+            if seen.insert(*pid) {
+                apps.push(focuswm_shell::SessionApp {
+                    task: list.task_of_window(WindowId(*id)),
+                    cmd: cmd.clone(),
+                    cwd: cwd.clone(),
+                });
+            }
+        }
+    }
+    apps.extend(still_pending.iter().cloned());
+    apps
 }
 
 /// Spawn a client program into the compositor, surfacing failures as a toast.
@@ -2877,6 +2998,50 @@ mod tests {
         assert_eq!(special_keycode("~"), None);
         assert_eq!(special_keycode("é"), None);
         assert_eq!(special_keycode("1"), None);
+    }
+
+    #[test]
+    fn proc_cmdline_reads_own_process() {
+        let (cmd, _cwd) = read_proc_cmdline(std::process::id()).expect("own /proc entry");
+        // Our own argv[0] is the test binary.
+        assert!(cmd[0].contains("focuswm"), "argv[0] = {:?}", cmd[0]);
+        // A dead pid yields None.
+        assert!(read_proc_cmdline(u32::MAX - 1).is_none());
+    }
+
+    #[test]
+    fn session_snapshot_dedups_by_pid_and_carries_pending() {
+        let mut list = TaskList::new();
+        let a = list.add_task("A", "work");
+        list.move_window_to(WindowId(1), Some(a));
+        list.move_window_to(WindowId(2), Some(a));
+        list.move_window_to(WindowId(3), None); // desktop 0
+
+        let mut shared = Shared::default();
+        let win = |pid: u32, cmd: &str| WinMeta {
+            proc: Some((pid, vec![cmd.to_string()], None)),
+            ..Default::default()
+        };
+        // Windows 1+2 belong to the same process: one snapshot entry.
+        shared.meta.insert(1, win(100, "gimp"));
+        shared.meta.insert(2, win(100, "gimp"));
+        shared.meta.insert(3, win(200, "foot"));
+        // A window whose process is unknown is skipped.
+        shared.meta.insert(4, WinMeta::default());
+
+        let pending = vec![focuswm_shell::SessionApp {
+            task: None,
+            cmd: vec!["firefox".into()],
+            cwd: None,
+        }];
+        let mut snap = session_snapshot(&list, &shared, &pending);
+        snap.sort_by(|x, y| x.cmd.cmp(&y.cmd));
+        assert_eq!(snap.len(), 3); // gimp (deduped), foot, carried-over firefox
+        assert_eq!(snap[0].cmd, vec!["firefox".to_string()]);
+        assert_eq!(snap[1].cmd, vec!["foot".to_string()]);
+        assert_eq!(snap[1].task, None);
+        assert_eq!(snap[2].cmd, vec!["gimp".to_string()]);
+        assert_eq!(snap[2].task, Some(a));
     }
 
     #[test]

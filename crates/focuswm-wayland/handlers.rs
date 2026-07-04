@@ -14,6 +14,7 @@ use smithay::reexports::wayland_server::protocol::wl_callback::WlCallback;
 use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Client;
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     with_states, BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
@@ -452,6 +453,12 @@ impl XdgShellHandler for FocusState {
 
         let id = self.allocate_window_id();
         let wl_surface = surface.wl_surface().clone();
+        // The connecting process id (SO_PEERCRED), for session restore: the UI
+        // reads its command line to respawn the app on the same desktop.
+        let pid = wl_surface
+            .client()
+            .and_then(|c| c.get_credentials(&self.display_handle).ok())
+            .map(|c| c.pid as u32);
         self.windows.insert(
             wl_surface,
             WindowEntry {
@@ -463,7 +470,7 @@ impl XdgShellHandler for FocusState {
                 geometry_offset: (0, 0),
             },
         );
-        let _ = self.events.send(Event::WindowAdded(id));
+        let _ = self.events.send(Event::WindowAdded { id, pid });
         log::info!("new toplevel -> window {id:?}");
     }
 

@@ -45,7 +45,10 @@ pub enum Event {
         width: i32,
         height: i32,
     },
-    WindowAdded(WindowId),
+    /// A window mapped. `pid` is the client process (SO_PEERCRED for Wayland,
+    /// _NET_WM_PID for X11) when known, so the UI can record its command line
+    /// for session restore.
+    WindowAdded { id: WindowId, pid: Option<u32> },
     WindowRemoved(WindowId),
     /// A window asked to be moved interactively (the client dragged its own
     /// client-side title bar → `xdg_toplevel.move`). The UI then drives the
@@ -172,7 +175,11 @@ impl std::fmt::Debug for Event {
                 .field("width", width)
                 .field("height", height)
                 .finish(),
-            Event::WindowAdded(id) => f.debug_tuple("WindowAdded").field(id).finish(),
+            Event::WindowAdded { id, pid } => f
+                .debug_struct("WindowAdded")
+                .field("id", id)
+                .field("pid", pid)
+                .finish(),
             Event::WindowRemoved(id) => f.debug_tuple("WindowRemoved").field(id).finish(),
             Event::MoveRequested(id) => f.debug_tuple("MoveRequested").field(id).finish(),
             Event::ResizeRequested { id, edges } => f

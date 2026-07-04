@@ -11,5 +11,5 @@ mod task;
 pub use model::{WindowId, WindowInfo};
 pub use task::{
     default_categories, default_idle_minutes, parse_slug, task_palette, Aggregate, GithubLink,
-    Settings, Task, TaskId, TaskList, TimeEntry, TimeLog,
+    SessionApp, Settings, Task, TaskId, TaskList, TimeEntry, TimeLog,
 };
