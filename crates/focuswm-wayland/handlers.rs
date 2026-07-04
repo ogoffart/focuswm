@@ -116,6 +116,9 @@ impl CompositorHandler for FocusState {
                 if let Some(entry) = self.windows.get_mut(&root) {
                     entry.geometry_offset = offset;
                 }
+                // Latency probe: paired with "lat: buffer shown" in the UI's GL
+                // upload; the delta is the compositor→screen pipeline latency.
+                log::debug!("lat: buffer sent {}", id.0);
                 let _ = self.events.send(Event::WindowBuffer {
                     id,
                     width,

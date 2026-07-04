@@ -318,10 +318,39 @@ pub enum Command {
     ResizeOutput { width: i32, height: i32 },
     /// Dismiss all open popups (e.g. a click landed outside them).
     DismissPopups,
+    /// The UI consumed the pending client frames (it is about to present them):
+    /// answer the queued `wl_surface.frame` callbacks now so clients start
+    /// drawing their next frame immediately instead of waiting for the pacing
+    /// timer — the biggest input→display latency win. The 16ms timer remains as
+    /// a fallback for clients whose frames aren't currently presented.
+    FireCallbacks,
 }
 
 /// Re-exported so the UI crate can hold the sending half.
 pub use smithay::reexports::calloop::channel::Sender as CommandSender;
+
+/// Sending half of the compositor→UI event channel: an mpsc sender plus a waker
+/// that nudges the UI event loop after each send, so events are pumped
+/// immediately instead of waiting for the next poll tick. This matters for
+/// input→display latency: a client's freshly committed frame would otherwise
+/// sit in the channel for up to a poll interval before the UI uploads it.
+#[derive(Clone)]
+pub struct EventSender {
+    tx: Sender<Event>,
+    waker: std::sync::Arc<dyn Fn() + Send + Sync>,
+}
+
+impl EventSender {
+    pub fn new(tx: Sender<Event>, waker: std::sync::Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self { tx, waker }
+    }
+
+    pub fn send(&self, event: Event) -> Result<(), std::sync::mpsc::SendError<Event>> {
+        let result = self.tx.send(event);
+        (self.waker)();
+        result
+    }
+}
 
 /// Create the command channel. The [`CommandSender`] stays on the UI thread; the
 /// channel is handed to [`run`].
@@ -335,7 +364,7 @@ pub fn command_channel() -> (
 /// Run the Wayland compositor event loop on a dedicated thread; blocks until the
 /// loop is torn down.
 pub fn run(
-    events: Sender<Event>,
+    events: EventSender,
     commands: smithay::reexports::calloop::channel::Channel<Command>,
 ) -> anyhow::Result<()> {
     let mut event_loop: EventLoop<FocusState> =

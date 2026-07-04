@@ -248,6 +248,15 @@ impl FocusState {
                     entry.popup.send_popup_done();
                 }
             }
+            Command::FireCallbacks => {
+                let now = self.millis_since_start();
+                for callback in self.pending_callbacks.drain(..) {
+                    callback.done(now);
+                }
+                if let Err(err) = self.display_handle.flush_clients() {
+                    log::warn!("failed to flush clients: {err}");
+                }
+            }
         }
     }
 

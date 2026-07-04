@@ -90,8 +90,9 @@ pub struct FocusState {
     /// pace rendering instead of busy-looping.
     pub pending_callbacks: Vec<WlCallback>,
 
-    /// Outbound channel notifying the UI thread of shell events.
-    pub events: std::sync::mpsc::Sender<Event>,
+    /// Outbound channel notifying the UI thread of shell events (wakes the UI
+    /// event loop on send, for low input→display latency).
+    pub events: crate::EventSender,
 
     /// Builds keymaps on the fly so the focused client can receive arbitrary
     /// composed Unicode (accents, AltGr, dead keys) regardless of layout.

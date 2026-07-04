@@ -54,6 +54,15 @@ const SIDEBAR_W: i32 = 252;
 const MIN_WIN_W: f32 = 200.0;
 const MIN_WIN_H: f32 = 120.0;
 
+// The compositor-event pump, registered on the UI thread so the compositor
+// thread can run it promptly via `slint::invoke_from_event_loop` (the closure
+// sent across threads must be `Send`, so it can't capture the pump directly).
+// `PUMP_SCHEDULED` coalesces bursts of events into one wake-up.
+thread_local! {
+    static PUMP: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+static PUMP_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Last-known metadata for a client window.
 #[derive(Default, Clone)]
 struct WinMeta {
@@ -260,7 +269,11 @@ struct Shared {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        // Microsecond timestamps so latency probes ("lat: buffer sent/shown")
+        // and event ordering are actually measurable from the log.
+        .format_timestamp_micros()
+        .init();
 
     // A compositor juggles a lot of file descriptors (a socket per client, every
     // dmabuf plane, XWayland, epoll/eventfds, …), so the default soft limit
@@ -296,6 +309,25 @@ fn main() -> anyhow::Result<()> {
 
     // Spawn the Wayland engine on its own thread.
     let (tx, rx) = channel::<Event>();
+    // Compositor events wake the UI event loop so they're pumped immediately
+    // (a client's fresh frame must not sit in the channel until the next poll
+    // tick — that's direct input→display latency). The waker coalesces: one
+    // wake-up per burst, re-armed when the pump runs.
+    let tx = focuswm_wayland::EventSender::new(
+        tx,
+        std::sync::Arc::new(|| {
+            use std::sync::atomic::Ordering;
+            if !PUMP_SCHEDULED.swap(true, Ordering::AcqRel) {
+                let _ = slint::invoke_from_event_loop(|| {
+                    PUMP_SCHEDULED.store(false, std::sync::atomic::Ordering::Release);
+                    let pump = PUMP.with(|p| p.borrow().clone());
+                    if let Some(pump) = pump {
+                        pump();
+                    }
+                });
+            }
+        }),
+    );
     let (cmd_tx, cmd_rx) = focuswm_wayland::command_channel();
     std::thread::Builder::new()
         .name("focuswm-wayland".into())
@@ -591,6 +623,7 @@ fn main() -> anyhow::Result<()> {
             let windows_model = windows_model.clone();
             let popups_model = popups_model.clone();
             let layers_model = layers_model.clone();
+            let cmd_tx = cmd_tx.clone();
             move |state, graphics_api| match state {
                 slint::RenderingState::RenderingSetup => {
                     if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api {
@@ -609,6 +642,7 @@ fn main() -> anyhow::Result<()> {
                     // GPU (dmabuf) frames first: import as EGLImage textures.
                     let dmabufs: Vec<(u64, DmabufFrame)> =
                         shared.pending_dmabuf.drain().collect();
+                    let consumed_dmabuf = !dmabufs.is_empty();
                     for (id, frame) in dmabufs {
                         let Some(image) = bridge.import_dmabuf(id, &frame) else {
                             continue;
@@ -618,12 +652,20 @@ fn main() -> anyhow::Result<()> {
                     }
                     // shm frames.
                     let frames: Vec<(u64, Frame)> = shared.pending.drain().collect();
+                    let consumed = consumed_dmabuf || !frames.is_empty();
                     for (id, frame) in frames {
                         let Some(image) = bridge.upload(id, &frame) else {
                             continue;
                         };
+                        log::debug!("lat: buffer shown {id}");
                         let (w, h) = (frame.width as f32, frame.height as f32);
                         place_texture(&mut shared, &windows_model, &popups_model, &layers_model, id, image, w, h);
+                    }
+                    // The consumed frames are about to be presented: answer the
+                    // clients' frame callbacks now so they draw their next frame
+                    // immediately instead of waiting out the 16ms pacing timer.
+                    if consumed {
+                        let _ = cmd_tx.send(Command::FireCallbacks);
                     }
                 }
                 _ => {}
@@ -1693,8 +1735,11 @@ fn main() -> anyhow::Result<()> {
     rebuild_windows();
 
     // --- Event pump: drain compositor events at ~60Hz --------------------------
-    let event_timer = slint::Timer::default();
-    event_timer.start(slint::TimerMode::Repeated, Duration::from_millis(16), {
+    // The pump is a shared closure: driven by a 16ms poll timer (for sources
+    // without wakers: toasts, tray, github events) and *immediately* via
+    // `PUMP`/`invoke_from_event_loop` whenever the compositor sends an event —
+    // a client's fresh frame must not wait out the poll interval.
+    let pump: Rc<dyn Fn()> = Rc::new({
         let tasks = tasks.clone();
         let shared = shared.clone();
         let spawn_env = spawn_env.clone();
@@ -2362,6 +2407,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+    });
+    PUMP.with(|p| *p.borrow_mut() = Some(pump.clone()));
+    let event_timer = slint::Timer::default();
+    event_timer.start(slint::TimerMode::Repeated, Duration::from_millis(16), {
+        let pump = pump.clone();
+        move || pump()
     });
 
     // --- Live clock ------------------------------------------------------------
