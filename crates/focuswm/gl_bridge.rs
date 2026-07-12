@@ -19,6 +19,10 @@ pub struct Frame {
     pub height: u32,
     /// Tightly-packed RGBA8, `width * height * 4` bytes.
     pub pixels: Vec<u8>,
+    /// The changed region `(x, y, w, h)` within `pixels`; `None` = all of it.
+    /// When the texture already exists at this size, only this rectangle is
+    /// uploaded (`glTexSubImage2D`) instead of re-uploading the whole frame.
+    pub damage: Option<(i32, i32, i32, i32)>,
 }
 
 /// A client GPU (dmabuf) frame waiting to be imported as an EGLImage texture.
@@ -93,6 +97,21 @@ impl GlBridge {
         // SAFETY: the loader returns valid GL function pointers for the context
         // current during the rendering notifier.
         let ctx = unsafe { glow::Context::from_loader_function_cstr(get_proc_address) };
+        // SAFETY: context is current (rendering notifier).
+        let (vendor, renderer) = unsafe {
+            (
+                ctx.get_parameter_string(glow::VENDOR),
+                ctx.get_parameter_string(glow::RENDERER),
+            )
+        };
+        log::info!("GL renderer: {renderer} ({vendor})");
+        let soft = renderer.to_lowercase();
+        if soft.contains("llvmpipe") || soft.contains("softpipe") || soft.contains("swrast") {
+            log::warn!(
+                "software GL rasterizer in use — expect high CPU and laggy \
+                 rendering; check GPU drivers / EGL setup"
+            );
+        }
         self.gl = Some(Rc::new(ctx));
 
         // Resolve the dmabuf-import extension entry points (optional).
@@ -127,6 +146,65 @@ impl GlBridge {
         // SAFETY: the GL context is current (rendering notifier); the texture id
         // stays alive in `self.textures` until the window is removed.
         unsafe {
+            // Same-size update of an existing texture: upload only the damaged
+            // rectangle (or the full frame) via glTexSubImage2D — never
+            // re-allocating with glTexImage2D, which stalls drivers.
+            if let Some(&(texture, w, h)) = self.textures.get(&id) {
+                if w == frame.width && h == frame.height {
+                    match frame.damage {
+                        Some((_, _, dw, dh)) if dw <= 0 || dh <= 0 => {
+                            // Nothing visible changed; keep the texture as-is.
+                        }
+                        Some((dx, dy, dw, dh))
+                            if dx >= 0
+                                && dy >= 0
+                                && (dx + dw) as u32 <= w
+                                && (dy + dh) as u32 <= h =>
+                        {
+                            // Gather the damaged rows into a contiguous scratch
+                            // buffer (portable: no UNPACK_ROW_LENGTH, which
+                            // GLES2 lacks) and upload just that rectangle.
+                            let (rw, rh) = (dw as usize, dh as usize);
+                            let mut scratch = Vec::with_capacity(rw * rh * 4);
+                            for row in dy as usize..(dy + dh) as usize {
+                                let s = (row * w as usize + dx as usize) * 4;
+                                scratch.extend_from_slice(&frame.pixels[s..s + rw * 4]);
+                            }
+                            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                            gl.tex_sub_image_2d(
+                                glow::TEXTURE_2D,
+                                0,
+                                dx,
+                                dy,
+                                dw,
+                                dh,
+                                glow::RGBA,
+                                glow::UNSIGNED_BYTE,
+                                glow::PixelUnpackData::Slice(Some(&scratch)),
+                            );
+                            gl.bind_texture(glow::TEXTURE_2D, None);
+                        }
+                        _ => {
+                            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                            gl.tex_sub_image_2d(
+                                glow::TEXTURE_2D,
+                                0,
+                                0,
+                                0,
+                                w as i32,
+                                h as i32,
+                                glow::RGBA,
+                                glow::UNSIGNED_BYTE,
+                                glow::PixelUnpackData::Slice(Some(&frame.pixels)),
+                            );
+                            gl.bind_texture(glow::TEXTURE_2D, None);
+                        }
+                    }
+                    return Some(borrowed(texture, w, h));
+                }
+            }
+
+            // First frame or resized: (re)allocate the full texture.
             let texture = match self.textures.get(&id) {
                 Some(&(texture, _, _)) => texture,
                 None => gl.create_texture().ok()?,

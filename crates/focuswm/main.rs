@@ -237,6 +237,28 @@ fn reorder_delta(dy: f32) -> i32 {
     (dy / ROW_PITCH).round() as i32
 }
 
+/// Union of two damage rectangles, where `None` means "fully damaged" (and so
+/// absorbs everything). Used when a newer pending frame replaces one the
+/// renderer never consumed: the union keeps the skipped frame's changes.
+fn union_damage(
+    a: Option<(i32, i32, i32, i32)>,
+    b: Option<(i32, i32, i32, i32)>,
+) -> Option<(i32, i32, i32, i32)> {
+    let (a, b) = (a?, b?);
+    // A zero-area rectangle contributes nothing.
+    if a.2 <= 0 || a.3 <= 0 {
+        return Some(b);
+    }
+    if b.2 <= 0 || b.3 <= 0 {
+        return Some(a);
+    }
+    let x0 = a.0.min(b.0);
+    let y0 = a.1.min(b.1);
+    let x1 = (a.0 + a.2).max(b.0 + b.2);
+    let y1 = (a.1 + a.3).max(b.1 + b.3);
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
 /// Step `cur` by `delta` within `0..n`, wrapping around both ends. Used to
 /// cycle through virtual desktops. `n` must be > 0.
 fn wrap_index(cur: usize, delta: i32, n: usize) -> usize {
@@ -1961,6 +1983,7 @@ fn main() -> anyhow::Result<()> {
                         min_h,
                         max_w,
                         max_h,
+                        damage,
                     } => {
                         let mut s = shared.borrow_mut();
                         let (cw, ch) = s.content;
@@ -2005,12 +2028,24 @@ fn main() -> anyhow::Result<()> {
                         }
                         meta.app_id = app_id;
                         let new_geom = meta.geom;
+                        // A pending frame the renderer hasn't consumed yet is
+                        // replaced by this one; its damage must carry over
+                        // (union), else the skipped frame's changes never reach
+                        // the texture.
+                        let damage = match s.pending.get(&id.0) {
+                            Some(prev) if prev.width == width && prev.height == height => {
+                                union_damage(prev.damage, damage)
+                            }
+                            Some(_) => None, // size changed: full upload
+                            None => damage,
+                        };
                         s.pending.insert(
                             id.0,
                             Frame {
                                 width,
                                 height,
                                 pixels,
+                                damage,
                             },
                         );
                         // Reconfigure the client to the frame's content area when
@@ -2106,7 +2141,7 @@ fn main() -> anyhow::Result<()> {
                             });
                             s.layer_rows.insert(id.0, row);
                         }
-                        s.pending.insert(id.0, Frame { width, height, pixels });
+                        s.pending.insert(id.0, Frame { width, height, pixels, damage: None });
                     }
                     Event::LayerRemoved(id) => {
                         let mut s = shared.borrow_mut();
@@ -2178,7 +2213,7 @@ fn main() -> anyhow::Result<()> {
                             });
                             s.popup_rows.insert(id.0, row);
                         }
-                        s.pending.insert(id.0, Frame { width, height, pixels });
+                        s.pending.insert(id.0, Frame { width, height, pixels, damage: None });
                     }
                     Event::PopupRemoved(id) => {
                         let mut s = shared.borrow_mut();
@@ -3245,6 +3280,21 @@ mod tests {
         assert_eq!(clamp_popup(-30.0, -10.0, 200.0, 150.0, area), (0.0, 0.0));
         // Bigger than the area: pins to the top-left rather than going negative.
         assert_eq!(clamp_popup(50.0, 50.0, 1200.0, 800.0, area), (0.0, 0.0));
+    }
+
+    #[test]
+    fn union_damage_none_is_full() {
+        assert_eq!(union_damage(None, Some((1, 1, 2, 2))), None);
+        assert_eq!(union_damage(Some((1, 1, 2, 2)), None), None);
+        assert_eq!(
+            union_damage(Some((0, 0, 2, 2)), Some((4, 4, 2, 2))),
+            Some((0, 0, 6, 6))
+        );
+        // Zero-area rects contribute nothing.
+        assert_eq!(
+            union_damage(Some((0, 0, 0, 0)), Some((4, 4, 2, 2))),
+            Some((4, 4, 2, 2))
+        );
     }
 
     #[test]

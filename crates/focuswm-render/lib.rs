@@ -19,6 +19,49 @@ pub enum ShmFormat {
     Xrgb8888,
 }
 
+/// Convert only the `(rx, ry, rw, rh)` rectangle of `src` (with `stride` bytes
+/// per row) into the matching region of `dst`, an existing tightly-packed
+/// `width * height * 4` RGBA8 buffer. This is the damage-tracking fast path: a
+/// keypress echo in a terminal damages a few cells, so converting just that
+/// rectangle replaces a full-frame conversion. The rectangle is clamped to the
+/// buffer bounds; a degenerate rectangle is a no-op.
+#[allow(clippy::too_many_arguments)]
+pub fn convert_rect_into(
+    dst: &mut [u8],
+    src: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    format: ShmFormat,
+    (rx, ry, rw, rh): (usize, usize, usize, usize),
+) {
+    if dst.len() < width * height * 4 {
+        return;
+    }
+    let x0 = rx.min(width);
+    let y0 = ry.min(height);
+    let x1 = rx.saturating_add(rw).min(width);
+    let y1 = ry.saturating_add(rh).min(height);
+    for y in y0..y1 {
+        let row_start = y * stride;
+        let Some(row) = src.get(row_start + x0 * 4..row_start + x1 * 4) else {
+            break; // truncated buffer: leave the rest untouched
+        };
+        let out_row = &mut dst[(y * width + x0) * 4..(y * width + x1) * 4];
+        for x in 0..x1 - x0 {
+            let s = &row[x * 4..x * 4 + 4];
+            let o = &mut out_row[x * 4..x * 4 + 4];
+            o[0] = s[2]; // R
+            o[1] = s[1]; // G
+            o[2] = s[0]; // B
+            o[3] = match format {
+                ShmFormat::Argb8888 => s[3],
+                ShmFormat::Xrgb8888 => 255,
+            };
+        }
+    }
+}
+
 /// Convert `src` (with `stride` bytes per row) into a tightly-packed
 /// `width * height * 4` RGBA8 buffer. Stride padding past `width*4` is skipped.
 pub fn convert_to_rgba(
@@ -236,5 +279,23 @@ mod tests {
         let src = [10u8, 20, 30, 0, 40, 50, 60, 7];
         let out = convert_to_rgba(&src, 2, 1, 8, ShmFormat::Xrgb8888);
         assert_eq!(out, vec![30, 20, 10, 255, 60, 50, 40, 255]);
+    }
+
+    #[test]
+    fn rect_conversion_touches_only_the_rect() {
+        // 2x2 BGRA source; convert only the right column into a canary-filled
+        // destination: the left column must keep its canary bytes.
+        let src = [
+            1u8, 1, 1, 255, 2, 2, 2, 255, // row 0: pixels A, B
+            3, 3, 3, 255, 4, 4, 4, 255, // row 1: pixels C, D
+        ];
+        let mut dst = vec![9u8; 2 * 2 * 4];
+        convert_rect_into(&mut dst, &src, 2, 2, 8, ShmFormat::Argb8888, (1, 0, 1, 2));
+        assert_eq!(&dst[0..4], &[9, 9, 9, 9], "left of row 0 untouched");
+        assert_eq!(&dst[4..8], &[2, 2, 2, 255], "B converted");
+        assert_eq!(&dst[8..12], &[9, 9, 9, 9], "left of row 1 untouched");
+        assert_eq!(&dst[12..16], &[4, 4, 4, 255], "D converted");
+        // Out-of-bounds rectangles clamp instead of panicking.
+        convert_rect_into(&mut dst, &src, 2, 2, 8, ShmFormat::Argb8888, (5, 5, 9, 9));
     }
 }

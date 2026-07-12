@@ -88,7 +88,7 @@ impl CompositorHandler for FocusState {
                 self.dnd_offset.1 += delta.y;
             }
             let mut cache = std::mem::take(&mut self.surface_pixels);
-            let buffer = composite_tree(&root, &mut cache, &mut callbacks);
+            let buffer = composite_tree(&root, &mut cache, &mut callbacks).map(|(b, _)| b);
             self.surface_pixels = cache;
             self.pending_callbacks.append(&mut callbacks);
             if let Some((width, height, pixels)) = buffer {
@@ -121,7 +121,7 @@ impl CompositorHandler for FocusState {
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
             self.pending_callbacks.append(&mut callbacks);
-            if let Some(buffer) = buffer {
+            if let Some((buffer, damage)) = buffer {
                 // Crop to the client's declared window geometry, dropping any
                 // client-side-decoration shadow margin. Record the offset so
                 // pointer input maps back to surface-local coordinates.
@@ -130,6 +130,10 @@ impl CompositorHandler for FocusState {
                 if let Some(entry) = self.windows.get_mut(&root) {
                     entry.geometry_offset = offset;
                 }
+                // The damage rectangle moves with the crop and clamps to it.
+                let damage = damage.map(|d| {
+                    shift_clamp_rect(d, (-offset.0, -offset.1), width as i32, height as i32)
+                });
                 // Latency probe: paired with "lat: buffer shown" in the UI's GL
                 // upload; the delta is the compositor→screen pipeline latency.
                 log::debug!("lat: buffer sent {}", id.0);
@@ -145,6 +149,7 @@ impl CompositorHandler for FocusState {
                     min_h,
                     max_w,
                     max_h,
+                    damage,
                 });
             }
             return;
@@ -154,7 +159,7 @@ impl CompositorHandler for FocusState {
         if let Some(entry) = self.popups.get(&root) {
             let (id, parent, offset) = (entry.id, entry.parent_id, entry.offset);
             let mut cache = std::mem::take(&mut self.surface_pixels);
-            let buffer = composite_tree(&root, &mut cache, &mut callbacks);
+            let buffer = composite_tree(&root, &mut cache, &mut callbacks).map(|(b, _)| b);
             self.surface_pixels = cache;
             self.pending_callbacks.append(&mut callbacks);
             if let Some(buffer) = buffer {
@@ -207,7 +212,7 @@ impl CompositorHandler for FocusState {
                 log::info!("layer surface {id:?} initial configure {w}x{h}");
             }
             let mut cache = std::mem::take(&mut self.surface_pixels);
-            let buffer = composite_tree(&root, &mut cache, &mut callbacks);
+            let buffer = composite_tree(&root, &mut cache, &mut callbacks).map(|(b, _)| b);
             self.surface_pixels = cache;
             self.pending_callbacks.append(&mut callbacks);
             if let Some((width, height, pixels)) = buffer {
@@ -250,7 +255,8 @@ impl CompositorHandler for FocusState {
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
             self.pending_callbacks.append(&mut callbacks);
-            if let Some((width, height, pixels)) = buffer {
+            if let Some(((width, height, pixels), damage)) = buffer {
+                log::debug!("lat: buffer sent {}", id.0);
                 let _ = self.events.send(Event::WindowBuffer {
                     id,
                     width,
@@ -263,6 +269,7 @@ impl CompositorHandler for FocusState {
                     min_h,
                     max_w,
                     max_h,
+                    damage,
                 });
             }
             return;
@@ -318,7 +325,7 @@ fn composite_tree(
     root: &WlSurface,
     cache: &mut std::collections::HashMap<WlSurface, (u32, u32, Vec<u8>)>,
     callbacks: &mut Vec<WlCallback>,
-) -> Option<(u32, u32, Vec<u8>)> {
+) -> Option<((u32, u32, Vec<u8>), Option<(i32, i32, i32, i32)>)> {
     use smithay::reexports::wayland_server::Resource;
     use smithay::wayland::compositor::{
         with_surface_tree_upward, SubsurfaceCachedState, TraversalAction,
@@ -332,6 +339,12 @@ fn composite_tree(
     // honouring subsurface place_above/below), which is painting order — the
     // `downward` variant is front-to-back, for hit-testing.
     let mut draw: Vec<((i32, i32), WlSurface)> = Vec::new();
+    // Damage accounting: rectangles updated in place (in canvas coordinates),
+    // or `full_damage` when anything forced a full refresh (new/removed/resized
+    // surface, viewport, single-pixel buffer). The second return value is the
+    // union rectangle, `None` meaning "treat as fully damaged".
+    let mut damage_rects: Vec<(i32, i32, i32, i32)> = Vec::new();
+    let mut full_damage = false;
 
     with_surface_tree_upward(
         root,
@@ -352,33 +365,56 @@ fn composite_tree(
                 .location;
             let pos = (location.0 + off.x, location.1 + off.y);
 
-            let new_buffer = {
+            let (new_buffer, buffer_damage) = {
                 let mut guard = states.cached_state.get::<SurfaceAttributes>();
                 let attrs = guard.current();
                 callbacks.append(&mut attrs.frame_callbacks);
-                attrs.buffer.take()
+                (attrs.buffer.take(), std::mem::take(&mut attrs.damage))
             };
 
             match new_buffer {
                 Some(BufferAssignment::NewBuffer(buffer)) => {
-                    let frame = shm_with_buffer_contents(&buffer, read_shm)
-                        .ok()
-                        .flatten()
-                        .or_else(|| {
-                            // Not shm: a wp_single_pixel_buffer is a 1x1 solid
-                            // colour (stretched by the viewport below).
-                            smithay::wayland::single_pixel_buffer::get_single_pixel_buffer(&buffer)
+                    let (src, dst) = {
+                        let mut guard = states.cached_state.get::<ViewportCachedState>();
+                        let v = guard.current();
+                        (v.src, v.dst)
+                    };
+                    // Damage fast path: an shm buffer, no viewport, a same-size
+                    // cached frame and a damage list → convert only the damaged
+                    // rectangles in place. A keypress echo damages a few cells,
+                    // not the whole window; this replaces a full-frame convert.
+                    let fast = src.is_none()
+                        && dst.is_none()
+                        && !buffer_damage.is_empty()
+                        && cache.get_mut(surface).is_some_and(|entry| {
+                            match damaged_update(entry, &buffer, &buffer_damage) {
+                                Some(rects) => {
+                                    for (x, y, w, h) in rects {
+                                        damage_rects.push((x + pos.0, y + pos.1, w, h));
+                                    }
+                                    true
+                                }
+                                None => false,
+                            }
+                        });
+                    if !fast {
+                        let frame = shm_with_buffer_contents(&buffer, read_shm)
+                            .ok()
+                            .flatten()
+                            .or_else(|| {
+                                // Not shm: a wp_single_pixel_buffer is a 1x1 solid
+                                // colour (stretched by the viewport below).
+                                smithay::wayland::single_pixel_buffer::get_single_pixel_buffer(
+                                    &buffer,
+                                )
                                 .ok()
                                 .map(|spb| (1, 1, spb.rgba8888().to_vec()))
-                        });
-                    if let Some(frame) = frame {
-                        // wp_viewport: crop to `src` and scale to `dst`.
-                        let (src, dst) = {
-                            let mut guard = states.cached_state.get::<ViewportCachedState>();
-                            let v = guard.current();
-                            (v.src, v.dst)
-                        };
-                        cache.insert(surface.clone(), apply_viewport(frame, src, dst));
+                            });
+                        if let Some(frame) = frame {
+                            // wp_viewport: crop to `src` and scale to `dst`.
+                            cache.insert(surface.clone(), apply_viewport(frame, src, dst));
+                        }
+                        full_damage = true;
                     }
                     // We copied the pixels into an owned buffer above, so the
                     // client's shm buffer can be reused immediately. Without this
@@ -388,6 +424,7 @@ fn composite_tree(
                 }
                 Some(BufferAssignment::Removed) => {
                     cache.remove(surface);
+                    full_damage = true;
                 }
                 None => {}
             }
@@ -409,7 +446,109 @@ fn composite_tree(
             );
         }
     }
-    Some((cw as u32, ch as u32, canvas))
+    let damage = if full_damage {
+        None
+    } else {
+        // Union of the in-place updates; zero-area when nothing visible changed
+        // (e.g. a commit that only updated surface state).
+        Some(union_rects(&damage_rects))
+    };
+    Some(((cw as u32, ch as u32, canvas), damage))
+}
+
+/// Convert only the damaged rectangles of an shm `buffer` in place into the
+/// surface's cached RGBA frame. Returns the clamped rectangles (surface-local),
+/// or `None` when the fast path doesn't apply (non-shm / unsupported format /
+/// size mismatch) so the caller falls back to a full conversion.
+fn damaged_update(
+    entry: &mut (u32, u32, Vec<u8>),
+    buffer: &WlBuffer,
+    damage: &[smithay::wayland::compositor::Damage],
+) -> Option<Vec<(i32, i32, i32, i32)>> {
+    use smithay::wayland::compositor::Damage;
+    let (ew, eh, pixels) = entry;
+    let (ew, eh) = (*ew, *eh);
+    shm_with_buffer_contents(buffer, |ptr, len, data| {
+        let format = match data.format {
+            wl_shm::Format::Argb8888 => ShmFormat::Argb8888,
+            wl_shm::Format::Xrgb8888 => ShmFormat::Xrgb8888,
+            _ => return None,
+        };
+        if data.width <= 0 || data.height <= 0 {
+            return None;
+        }
+        if data.width as u32 != ew || data.height as u32 != eh {
+            return None; // resized: needs a full reconvert (and full damage)
+        }
+        let offset = data.offset.max(0) as usize;
+        if offset > len {
+            return None;
+        }
+        // SAFETY: `ptr` is valid for `len` bytes for the duration of this
+        // callback, and we only read within `[offset, len)`.
+        let src = unsafe { std::slice::from_raw_parts(ptr.add(offset), len - offset) };
+        let (w, h) = (ew as i32, eh as i32);
+        let mut rects = Vec::new();
+        for d in damage {
+            // At scale 1 surface and buffer coordinates coincide.
+            let r = match d {
+                Damage::Buffer(r) => (r.loc.x, r.loc.y, r.size.w, r.size.h),
+                Damage::Surface(r) => (r.loc.x, r.loc.y, r.size.w, r.size.h),
+            };
+            let x0 = r.0.clamp(0, w);
+            let y0 = r.1.clamp(0, h);
+            let x1 = r.0.saturating_add(r.2).clamp(0, w);
+            let y1 = r.1.saturating_add(r.3).clamp(0, h);
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            focuswm_render::convert_rect_into(
+                pixels,
+                src,
+                ew as usize,
+                eh as usize,
+                data.stride as usize,
+                format,
+                (x0 as usize, y0 as usize, (x1 - x0) as usize, (y1 - y0) as usize),
+            );
+            rects.push((x0, y0, x1 - x0, y1 - y0));
+        }
+        Some(rects)
+    })
+    .ok()
+    .flatten()
+}
+
+/// Shift a rectangle by `(dx, dy)` and clamp it to a `w`×`h` area (zero-area
+/// when it falls entirely outside).
+fn shift_clamp_rect(
+    (x, y, rw, rh): (i32, i32, i32, i32),
+    (dx, dy): (i32, i32),
+    w: i32,
+    h: i32,
+) -> (i32, i32, i32, i32) {
+    let x0 = (x + dx).clamp(0, w);
+    let y0 = (y + dy).clamp(0, h);
+    let x1 = (x + dx).saturating_add(rw).clamp(0, w);
+    let y1 = (y + dy).saturating_add(rh).clamp(0, h);
+    (x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+}
+
+/// The union bounding box of a set of rectangles; zero-area at the origin when
+/// the set is empty.
+fn union_rects(rects: &[(i32, i32, i32, i32)]) -> (i32, i32, i32, i32) {
+    let mut it = rects.iter();
+    let Some(&(x, y, w, h)) = it.next() else {
+        return (0, 0, 0, 0);
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (x, y, x + w, y + h);
+    for &(x, y, w, h) in it {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x + w);
+        y1 = y1.max(y + h);
+    }
+    (x0, y0, x1 - x0, y1 - y0)
 }
 
 fn read_shm(ptr: *const u8, len: usize, data: BufferData) -> Option<(u32, u32, Vec<u8>)> {
@@ -1242,6 +1381,18 @@ mod tests {
             layer_position(out, Anchor::LEFT | Anchor::RIGHT | Anchor::TOP, m, 100, 8),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn rect_union_and_shift_clamp() {
+        use super::{shift_clamp_rect, union_rects};
+        assert_eq!(union_rects(&[]), (0, 0, 0, 0));
+        assert_eq!(union_rects(&[(2, 3, 4, 5)]), (2, 3, 4, 5));
+        assert_eq!(union_rects(&[(0, 0, 2, 2), (4, 4, 2, 2)]), (0, 0, 6, 6));
+        // Shift left/up by the crop offset and clamp to the cropped size.
+        assert_eq!(shift_clamp_rect((10, 10, 4, 4), (-8, -8), 100, 100), (2, 2, 4, 4));
+        assert_eq!(shift_clamp_rect((0, 0, 4, 4), (-8, -8), 100, 100), (0, 0, 0, 0));
+        assert_eq!(shift_clamp_rect((98, 0, 10, 2), (0, 0), 100, 100), (98, 0, 2, 2));
     }
 
     #[test]

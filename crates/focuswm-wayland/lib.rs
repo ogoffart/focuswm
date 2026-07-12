@@ -84,6 +84,10 @@ pub enum Event {
         min_h: i32,
         max_w: i32,
         max_h: i32,
+        /// The changed region `(x, y, w, h)` within `pixels`, when known —
+        /// `None` means "treat as fully damaged". The UI uploads only this
+        /// rectangle to the GL texture (the pixels are still the full frame).
+        damage: Option<(i32, i32, i32, i32)>,
     },
     /// A popup committed a frame, drawn at offset `(ox, oy)` from `parent`.
     PopupBuffer {
