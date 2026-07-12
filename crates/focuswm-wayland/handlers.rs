@@ -136,7 +136,8 @@ impl CompositorHandler for FocusState {
                 });
                 // Latency probe: paired with "lat: buffer shown" in the UI's GL
                 // upload; the delta is the compositor→screen pipeline latency.
-                log::debug!("lat: buffer sent {}", id.0);
+                // `damage=None` means a full refresh (partial is the fast path).
+                log::debug!("lat: buffer sent {} damage={damage:?}", id.0);
                 let _ = self.events.send(Event::WindowBuffer {
                     id,
                     width,
@@ -436,8 +437,28 @@ fn composite_tree(
         |_, _, _| true,
     );
 
+    let damage = if full_damage {
+        None
+    } else {
+        // Union of the in-place updates; zero-area when nothing visible changed
+        // (e.g. a commit that only updated surface state).
+        Some(union_rects(&damage_rects))
+    };
+
     let (cw, ch, _) = cache.get(root)?;
     let (cw, ch) = (*cw as usize, *ch as usize);
+
+    // The overwhelmingly common case is a single surface with no subsurfaces:
+    // its cached frame *is* the composite. Clone it (one memcpy) instead of
+    // zeroing a canvas and alpha-blending the whole frame onto it per commit —
+    // at a typing echo rate that difference is real CPU.
+    if let [(pos, surface)] = draw.as_slice() {
+        if *pos == (0, 0) && surface == root {
+            let frame = cache.get(root)?.clone();
+            return Some((frame, damage));
+        }
+    }
+
     let mut canvas = vec![0u8; cw * ch * 4];
     for (pos, surface) in &draw {
         if let Some((w, h, pixels)) = cache.get(surface) {
@@ -446,13 +467,6 @@ fn composite_tree(
             );
         }
     }
-    let damage = if full_damage {
-        None
-    } else {
-        // Union of the in-place updates; zero-area when nothing visible changed
-        // (e.g. a commit that only updated surface state).
-        Some(union_rects(&damage_rects))
-    };
     Some(((cw as u32, ch as u32, canvas), damage))
 }
 
