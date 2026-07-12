@@ -464,6 +464,7 @@ pub fn run(
         events: events.clone(),
         text_input: Default::default(),
         dnd_icon: None,
+        dnd_offset: (0, 0),
     };
 
     // Install a keymap pre-loaded with common Unicode characters before any

@@ -46,6 +46,7 @@ pub fn start_private_dbus(
     if reader.read_line(&mut address).is_err() || address.trim().is_empty() {
         log::warn!("private dbus: dbus-daemon printed no address; clients share the session bus");
         let _ = child.kill();
+        let _ = child.wait(); // reap; kill() alone leaves a zombie
         return None;
     }
     let address = address.trim().to_string();
@@ -173,7 +174,15 @@ pub fn spawn(cmd: &[String], env: &SpawnEnv, cwd: Option<&str>) -> Result<(), St
         env.dbus_address.is_some(),
     );
     match command.spawn() {
-        Ok(_) => Ok(()),
+        Ok(mut child) => {
+            // focuswm is the direct parent of every client it launches and
+            // runs for the whole session: without a reaper each exited client
+            // would linger as a zombie in the process table.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
         Err(err) => Err(format!("failed to launch {program}: {err}")),
     }
 }

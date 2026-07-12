@@ -199,14 +199,32 @@ impl GlBridge {
                 (egl.destroy_image)(display, old);
             }
 
-            let texture = match self.textures.get(&id) {
-                Some(&(texture, _, _)) => texture,
-                None => gl.create_texture().ok()?,
+            let (texture, existed) = match self.textures.get(&id) {
+                Some(&(texture, _, _)) => (texture, true),
+                None => (gl.create_texture().ok()?, false),
             };
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             set_tex_params(&gl);
+            // Drain any stale error so the check below is attributable.
+            while gl.get_error() != glow::NO_ERROR {}
             (egl.target_texture)(glow::TEXTURE_2D, image);
+            let err = gl.get_error();
             gl.bind_texture(glow::TEXTURE_2D, None);
+            if err != glow::NO_ERROR {
+                // The image isn't usable as a 2D texture (e.g. external-only
+                // format); honour the "None on any failure" contract instead
+                // of handing Slint an incomplete texture.
+                log::warn!(
+                    "dmabuf: glEGLImageTargetTexture2DOES failed (0x{err:x}) for window {id}"
+                );
+                if let Some(image) = self.images.remove(&id) {
+                    (egl.destroy_image)(display, image);
+                }
+                if !existed {
+                    gl.delete_texture(texture);
+                }
+                return None;
+            }
             self.textures.insert(id, (texture, frame.width, frame.height));
             Some(borrowed(texture, frame.width, frame.height))
         }

@@ -124,7 +124,10 @@ impl WinGeom {
     /// content area (keep at least `KEEP` px of the frame on each axis on-screen).
     fn clamp_pos(&mut self, cw: f32, ch: f32) {
         const KEEP: f32 = 80.0;
-        self.x = self.x.clamp(KEEP - self.w, (cw - KEEP).max(0.0));
+        // A frame narrower than KEEP in a narrow content area can make the
+        // lower bound exceed the upper one; cap it so `clamp` can't panic.
+        let xmax = (cw - KEEP).max(0.0);
+        self.x = self.x.clamp((KEEP - self.w).min(xmax), xmax);
         self.y = self.y.clamp(0.0, (ch - TITLE_BAR_H).max(0.0));
     }
 
@@ -686,6 +689,7 @@ fn main() -> anyhow::Result<()> {
         let mark_active = mark_active.clone();
         let toast_tx = toast_tx.clone();
         let pending_link = pending_link.clone();
+        let focused = focused.clone();
         move |name, category, branch, repo| {
             mark_active();
             {
@@ -705,6 +709,9 @@ fn main() -> anyhow::Result<()> {
                 list.record_repo(repo.as_str());
                 list.set_active(id, now_secs());
             }
+            // The new task has no windows yet: clear the focus so shortcuts
+            // like Super+W can't act on a window of the previous desktop.
+            *focused.borrow_mut() = None;
             refresh_tasks();
             rebuild_windows();
             persist::save(&tasks.borrow());
@@ -809,6 +816,7 @@ fn main() -> anyhow::Result<()> {
         let now_secs = now_secs.clone();
         let cmd_tx = cmd_tx.clone();
         let mark_active = mark_active.clone();
+        let focused = focused.clone();
         move || {
             mark_active();
             {
@@ -817,9 +825,11 @@ fn main() -> anyhow::Result<()> {
                 list.set_scratch_active(now_secs());
             }
             refresh_tasks();
-            rebuild_windows();
-            // Focus desktop 0's first window, if any.
+            // Focus desktop 0's first window, if any — and track it, so
+            // window shortcuts act on this desktop, not the previous one.
             let first = tasks.borrow().active_windows().first().copied();
+            *focused.borrow_mut() = first;
+            rebuild_windows();
             if let Some(w) = first {
                 let _ = cmd_tx.send(Command::FocusWindow(w));
             }
@@ -1140,7 +1150,15 @@ fn main() -> anyhow::Result<()> {
         let mark_active = mark_active.clone();
         move |forward| {
             mark_active();
-            let wins = tasks.borrow().active_windows();
+            // Skip minimized windows: cycling onto one would hand keyboard
+            // focus to a window that isn't on screen.
+            let wins: Vec<WindowId> = {
+                let list = tasks.borrow();
+                list.active_windows()
+                    .into_iter()
+                    .filter(|w| !list.is_minimized(*w))
+                    .collect()
+            };
             if wins.is_empty() {
                 return;
             }
@@ -1704,7 +1722,12 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_key_event({
         let cmd_tx = cmd_tx.clone();
         let mark_active = mark_active.clone();
+        let weak = weak.clone();
         move |text, ctrl, alt, shift, pressed| {
+            // Never forward keys to clients while the lock screen is up.
+            if weak.upgrade().is_some_and(|ui| ui.get_locked()) {
+                return;
+            }
             mark_active();
             // Only act on press; emit a full modifier-wrapped tap (works for
             // typing; key-repeat arrives as further press events).
@@ -1720,7 +1743,12 @@ fn main() -> anyhow::Result<()> {
     ui.global::<Logic>().on_text_input({
         let cmd_tx = cmd_tx.clone();
         let mark_active = mark_active.clone();
+        let weak = weak.clone();
         move |text| {
+            // Never type into clients while the lock screen is up.
+            if weak.upgrade().is_some_and(|ui| ui.get_locked()) {
+                return;
+            }
             mark_active();
             if !text.is_empty() {
                 let _ = cmd_tx.send(Command::TypeText(text.to_string()));
@@ -1885,6 +1913,11 @@ fn main() -> anyhow::Result<()> {
                         let mut s = shared.borrow_mut();
                         s.meta.remove(&id.0);
                         s.tiles.remove(&id.0);
+                        // Drop any frame still queued for upload: it would
+                        // otherwise recreate (and permanently leak) the GL
+                        // texture right after `closed` frees it.
+                        s.pending.remove(&id.0);
+                        s.pending_dmabuf.remove(&id.0);
                         s.closed.push(id.0);
                         drop(s);
                         // If the focused window closed, focus another in the task.
@@ -2078,6 +2111,7 @@ fn main() -> anyhow::Result<()> {
                     Event::LayerRemoved(id) => {
                         let mut s = shared.borrow_mut();
                         s.pending.remove(&id.0);
+                        s.tiles.remove(&id.0);
                         if let Some(removed) = s.layer_rows.remove(&id.0) {
                             layers_model.remove(removed);
                             for row in s.layer_rows.values_mut() {
@@ -2113,7 +2147,7 @@ fn main() -> anyhow::Result<()> {
                         pixels,
                     } => {
                         let mut s = shared.borrow_mut();
-                        let (px, py) = popup_origin(&s, &popups_model, parent);
+                        let (px, py) = popup_origin(&s, &popups_model, &layers_model, parent);
                         // Slide the popup back inside the content area if the
                         // positioner would put it off-screen (a poor man's
                         // xdg_positioner constraint_adjustment).
@@ -2149,6 +2183,7 @@ fn main() -> anyhow::Result<()> {
                     Event::PopupRemoved(id) => {
                         let mut s = shared.borrow_mut();
                         s.pending.remove(&id.0);
+                        s.tiles.remove(&id.0);
                         if let Some(removed) = s.popup_rows.remove(&id.0) {
                             popups_model.remove(removed);
                             for row in s.popup_rows.values_mut() {
@@ -2171,6 +2206,8 @@ fn main() -> anyhow::Result<()> {
                             ad.set_dnd_active(false);
                             ad.set_dnd_w(0.0);
                             ad.set_dnd_h(0.0);
+                            ad.set_dnd_hot_x(0.0);
+                            ad.set_dnd_hot_y(0.0);
                             ad.set_dnd_icon(slint::Image::default());
                         }
                     }
@@ -2178,7 +2215,8 @@ fn main() -> anyhow::Result<()> {
                         width,
                         height,
                         pixels,
-                        ..
+                        hot_x,
+                        hot_y,
                     } => {
                         if let Some(ui) = weak.upgrade() {
                             let img = rgba_to_image(width, height, &pixels);
@@ -2186,6 +2224,8 @@ fn main() -> anyhow::Result<()> {
                             ad.set_dnd_icon(img);
                             ad.set_dnd_w(width as f32);
                             ad.set_dnd_h(height as f32);
+                            ad.set_dnd_hot_x(hot_x as f32);
+                            ad.set_dnd_hot_y(hot_y as f32);
                         }
                     }
                     Event::CursorShape(code) => {
@@ -2451,6 +2491,7 @@ fn main() -> anyhow::Result<()> {
             let threshold = tasks.borrow().settings().idle_minutes.saturating_mul(60);
             // A client (e.g. a video player) may inhibit idle.
             let inhibited = shared.borrow().idle_inhibited;
+            let locked = weak.upgrade().map(|ui| ui.get_locked()).unwrap_or(false);
             let became_idle = {
                 let mut list = tasks.borrow_mut();
                 list.set_date(&today());
@@ -2461,8 +2502,17 @@ fn main() -> anyhow::Result<()> {
                     list.pause();
                     was_running
                 } else {
-                    list.resume(now);
-                    list.flush(now);
+                    // While locked, stay paused: only an explicit unlock
+                    // resumes accrual (otherwise this tick would silently undo
+                    // a manual lock's pause and keep counting).
+                    if !locked {
+                        list.resume(now);
+                    }
+                    // Commit only up to the last activity. Flushing to `now`
+                    // would bank idle time tick-by-tick, making the
+                    // retroactive exclusion above a no-op once the threshold
+                    // trips.
+                    list.flush(now.saturating_sub(idle_secs));
                     false
                 }
             };
@@ -2543,6 +2593,7 @@ fn clamp_popup(x: f32, y: f32, w: f32, h: f32, (cw, ch): (f32, f32)) -> (f32, f3
 fn popup_origin(
     shared: &Shared,
     popups_model: &VecModel<PopupTile>,
+    layers_model: &VecModel<LayerTile>,
     parent: Option<WindowId>,
 ) -> (f32, f32) {
     let Some(parent) = parent else {
@@ -2559,6 +2610,12 @@ fn popup_origin(
     }
     if let Some(&row) = shared.popup_rows.get(&parent.0) {
         if let Some(t) = popups_model.row_data(row) {
+            return (t.x, t.y);
+        }
+    }
+    // A menu/tooltip opened from a layer-shell client (bar, launcher).
+    if let Some(&row) = shared.layer_rows.get(&parent.0) {
+        if let Some(t) = layers_model.row_data(row) {
             return (t.x, t.y);
         }
     }

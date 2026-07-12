@@ -475,9 +475,13 @@ impl TaskList {
     }
 
     /// Rebuild the volatile state (ids counter) after loading from disk, so new
-    /// task ids don't collide with persisted ones.
+    /// task ids don't collide with persisted ones. Only ever raises the counter:
+    /// the persisted `next_id` may exceed `max(task ids) + 1` when the
+    /// highest-id task was deleted, and lowering it would reuse that id and
+    /// merge the new task's time-log rows with the deleted task's.
     pub fn reindex_after_load(&mut self) {
-        self.next_id = self.tasks.iter().map(|t| t.id.0 + 1).max().unwrap_or(0);
+        let min_next = self.tasks.iter().map(|t| t.id.0 + 1).max().unwrap_or(0);
+        self.next_id = self.next_id.max(min_next);
     }
 
     /// Previously entered origin-repo paths, most-recent first.
@@ -1038,6 +1042,20 @@ mod tests {
         list.add_task("B", "work");
         // Simulate a load that reset next_id but kept tasks.
         list.next_id = 0;
+        list.reindex_after_load();
+        let c = list.add_task("C", "work");
+        assert_eq!(c, TaskId(2));
+    }
+
+    #[test]
+    fn reindex_after_load_never_reuses_deleted_ids() {
+        // The highest-id task was deleted before the last save: the persisted
+        // next_id (2) exceeds max(task ids)+1 (1) and must win, so the deleted
+        // task's id is not handed out again (its time-log rows still exist).
+        let mut list = TaskList::new();
+        list.add_task("A", "work");
+        let b = list.add_task("B", "work");
+        list.remove_task(b, 0);
         list.reindex_after_load();
         let c = list.add_task("C", "work");
         assert_eq!(c, TaskId(2));

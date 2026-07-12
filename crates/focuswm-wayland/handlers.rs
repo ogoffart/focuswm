@@ -73,6 +73,20 @@ impl CompositorHandler for FocusState {
         // Drag-and-drop icon? Composite it and hand the UI the frame to draw
         // following the cursor (it's not a window/popup/layer/X11 surface).
         if self.dnd_icon.as_ref() == Some(&root) {
+            // Accumulate the icon's wl_surface.offset: clients position the
+            // cursor hotspot inside the image with (negative) offsets.
+            let delta = with_states(&root, |states| {
+                states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .buffer_delta
+                    .take()
+            });
+            if let Some(delta) = delta {
+                self.dnd_offset.0 += delta.x;
+                self.dnd_offset.1 += delta.y;
+            }
             let mut cache = std::mem::take(&mut self.surface_pixels);
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
@@ -82,8 +96,8 @@ impl CompositorHandler for FocusState {
                     width,
                     height,
                     pixels,
-                    hot_x: 0,
-                    hot_y: 0,
+                    hot_x: -self.dnd_offset.0,
+                    hot_y: -self.dnd_offset.1,
                 });
             }
             return;
@@ -143,7 +157,15 @@ impl CompositorHandler for FocusState {
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
             self.pending_callbacks.append(&mut callbacks);
-            if let Some((width, height, pixels)) = buffer {
+            if let Some(buffer) = buffer {
+                // Crop to the window geometry like toplevels: the positioner
+                // places the popup's *geometry*, so an uncropped CSD popup
+                // would render offset by its shadow margin.
+                let geometry = window_geometry(&root);
+                let ((width, height, pixels), goff) = crop_to_geometry(buffer, geometry);
+                if let Some(entry) = self.popups.get_mut(&root) {
+                    entry.geometry_offset = goff;
+                }
                 let _ = self.events.send(Event::PopupBuffer {
                     id,
                     parent,
@@ -160,6 +182,30 @@ impl CompositorHandler for FocusState {
         // Layer-shell surface (bar, wallpaper, notification)?
         if let Some(entry) = self.layer_surfaces.get(&root) {
             let (id, layer) = (entry.id, entry.layer);
+            // First commit: the client's set_size/set_anchor are only now
+            // committed, so this is the earliest the requested size can be
+            // read. Fill 0 dimensions with the output size and send the
+            // initial configure (there is no buffer yet to composite).
+            let initial_configure_sent = with_states(&root, |states| {
+                states
+                    .data_map
+                    .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceData>()
+                    .map(|data| data.lock().unwrap().initial_configure_sent)
+                    .unwrap_or(true)
+            });
+            if !initial_configure_sent {
+                let desired = with_states(&root, |states| {
+                    states.cached_state.get::<LayerSurfaceCachedState>().current().size
+                });
+                let (out_w, out_h) = self.current_output_size;
+                let w = if desired.w > 0 { desired.w } else { out_w };
+                let h = if desired.h > 0 { desired.h } else { out_h };
+                entry.surface.with_pending_state(|state| {
+                    state.size = Some((w, h).into());
+                });
+                entry.surface.send_configure();
+                log::info!("layer surface {id:?} initial configure {w}x{h}");
+            }
             let mut cache = std::mem::take(&mut self.surface_pixels);
             let buffer = composite_tree(&root, &mut cache, &mut callbacks);
             self.surface_pixels = cache;
@@ -231,6 +277,26 @@ impl CompositorHandler for FocusState {
         });
         self.pending_callbacks.append(&mut callbacks);
     }
+}
+
+/// Drop the cached pixels of a destroyed role's whole surface tree. The
+/// `wl_surface`s may outlive the role (clients can reuse them), in which case
+/// `composite_tree`'s is-alive pruning never fires and every cached frame
+/// would stay pinned until the client disconnects.
+fn forget_surface_pixels(
+    cache: &mut std::collections::HashMap<WlSurface, (u32, u32, Vec<u8>)>,
+    root: &WlSurface,
+) {
+    use smithay::wayland::compositor::{with_surface_tree_upward, TraversalAction};
+    with_surface_tree_upward(
+        root,
+        (),
+        |_, _, _| TraversalAction::DoChildren(()),
+        |surface, _, _| {
+            cache.remove(surface);
+        },
+        |_, _, _| true,
+    );
 }
 
 /// Walk up the subsurface parent chain to the root `wl_surface` of a tree.
@@ -478,6 +544,7 @@ impl XdgShellHandler for FocusState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        forget_surface_pixels(&mut self.surface_pixels, surface.wl_surface());
         if let Some(entry) = self.windows.remove(surface.wl_surface()) {
             let _ = self.events.send(Event::WindowRemoved(entry.id));
             log::info!("toplevel destroyed -> window {:?}", entry.id);
@@ -502,12 +569,14 @@ impl XdgShellHandler for FocusState {
                 popup: surface,
                 parent_id,
                 offset: (geometry.loc.x, geometry.loc.y),
+                geometry_offset: (0, 0),
             },
         );
         log::info!("new popup {id:?} (parent {parent_id:?})");
     }
 
     fn popup_destroyed(&mut self, surface: PopupSurface) {
+        forget_surface_pixels(&mut self.surface_pixels, surface.wl_surface());
         if let Some(entry) = self.popups.remove(surface.wl_surface()) {
             let _ = self.events.send(Event::PopupRemoved(entry.id));
         }
@@ -758,26 +827,31 @@ impl WlrLayerShellHandler for FocusState {
         layer: Layer,
         _namespace: String,
     ) {
-        // Size the surface from its request, filling 0 dimensions to the output.
-        let desired = with_states(surface.wl_surface(), |states| {
-            states.cached_state.get::<LayerSurfaceCachedState>().current().size
-        });
-        let (out_w, out_h) = self.current_output_size;
-        let w = if desired.w > 0 { desired.w } else { out_w };
-        let h = if desired.h > 0 { desired.h } else { out_h };
-        surface.with_pending_state(|state| {
-            state.size = Some((w, h).into());
-        });
-        surface.send_configure();
-
+        // Don't configure here: this callback runs synchronously inside the
+        // `get_layer_surface` request, before the client's `set_size`/
+        // `set_anchor` are even committed (reading the size now always yields
+        // (0,0)). The initial configure is sent on the surface's first commit,
+        // when its requested state is actually current.
         let id = self.allocate_window_id();
         let wl = surface.wl_surface().clone();
         self.layer_surfaces
             .insert(wl, LayerEntry { id, surface, layer });
-        log::info!("new layer surface {id:?} ({layer:?}) {w}x{h}");
+        log::info!("new layer surface {id:?} ({layer:?})");
+    }
+
+    fn new_popup(&mut self, parent: LayerSurface, popup: PopupSurface) {
+        // A layer-shell popup's xdg_popup is created with a null parent; the
+        // association only arrives via `get_popup`, here. Fix up the entry
+        // recorded by `XdgShellHandler::new_popup` so the UI can anchor the
+        // popup to its layer surface instead of the screen origin.
+        let parent_id = self.layer_surfaces.get(parent.wl_surface()).map(|e| e.id);
+        if let Some(entry) = self.popups.get_mut(popup.wl_surface()) {
+            entry.parent_id = parent_id;
+        }
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
+        forget_surface_pixels(&mut self.surface_pixels, surface.wl_surface());
         if let Some(entry) = self.layer_surfaces.remove(surface.wl_surface()) {
             let _ = self.events.send(Event::LayerRemoved(entry.id));
         }
@@ -811,6 +885,8 @@ fn layer_to_u8(layer: Layer) -> u8 {
 }
 
 /// Position a layer surface against the output edges per its anchors + margins.
+/// A surface anchored to neither edge of an axis is centered on that axis (the
+/// wlr-layer-shell rule notification daemons and launchers rely on).
 fn layer_position(
     (out_w, out_h): (i32, i32),
     anchor: Anchor,
@@ -818,15 +894,15 @@ fn layer_position(
     w: i32,
     h: i32,
 ) -> (i32, i32) {
-    let x = if anchor.contains(Anchor::RIGHT) && !anchor.contains(Anchor::LEFT) {
-        out_w - w - margin.right
-    } else {
-        margin.left
+    let x = match (anchor.contains(Anchor::LEFT), anchor.contains(Anchor::RIGHT)) {
+        (false, true) => out_w - w - margin.right,
+        (false, false) => (out_w - w) / 2,
+        _ => margin.left,
     };
-    let y = if anchor.contains(Anchor::BOTTOM) && !anchor.contains(Anchor::TOP) {
-        out_h - h - margin.bottom
-    } else {
-        margin.top
+    let y = match (anchor.contains(Anchor::TOP), anchor.contains(Anchor::BOTTOM)) {
+        (false, true) => out_h - h - margin.bottom,
+        (false, false) => (out_h - h) / 2,
+        _ => margin.top,
     };
     (x, y)
 }
@@ -958,6 +1034,7 @@ impl ClientDndGrabHandler for FocusState {
         // following the cursor; tell the UI to route motion globally so the
         // drag can cross between application windows.
         self.dnd_icon = icon;
+        self.dnd_offset = (0, 0);
         let _ = self.events.send(Event::DragStarted);
     }
 
@@ -1143,6 +1220,28 @@ mod tests {
         assert_eq!(resize_edges_mask(E::BottomRight), 10);
         assert_eq!(resize_edges_mask(E::TopLeft), 5);
         assert_eq!(resize_edges_mask(E::None), 0);
+    }
+
+    #[test]
+    fn layer_position_edges_and_centering() {
+        use super::layer_position;
+        use smithay::wayland::shell::wlr_layer::Anchor;
+        let out = (100, 80);
+        let m = smithay::wayland::shell::wlr_layer::Margins::default();
+        // Anchored to one edge: pinned there.
+        assert_eq!(layer_position(out, Anchor::LEFT | Anchor::TOP, m, 10, 8), (0, 0));
+        assert_eq!(
+            layer_position(out, Anchor::RIGHT | Anchor::BOTTOM, m, 10, 8),
+            (90, 72)
+        );
+        // Anchored to neither edge of an axis: centered on that axis.
+        assert_eq!(layer_position(out, Anchor::TOP, m, 10, 8), (45, 0));
+        assert_eq!(layer_position(out, Anchor::empty(), m, 10, 8), (45, 36));
+        // Anchored to both edges of an axis: spans from the leading margin.
+        assert_eq!(
+            layer_position(out, Anchor::LEFT | Anchor::RIGHT | Anchor::TOP, m, 100, 8),
+            (0, 0)
+        );
     }
 
     #[test]

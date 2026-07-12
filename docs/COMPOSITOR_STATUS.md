@@ -102,8 +102,28 @@ Code path exists but is incomplete or a no-op.
 - **XWayland is first-cut** — interactive resize and `configure_notify` are
   empty and X11 stacking/`Reorder` requests are dropped; XWayland is best-effort
   and may not even spawn if the `Xwayland` binary is absent.
+- **X11 keyboard focus never reaches the X server** — `KeyboardFocus` is
+  `WlSurface`, so focusing an X11 window's surface only sends
+  `wl_keyboard.enter`; smithay's `SetInputFocus`/`WM_TAKE_FOCUS` plumbing lives
+  in `KeyboardTarget for X11Surface` and is never reached. Keystrokes go to
+  whatever X window has focus (PointerRoot fallback). Fixing this needs an
+  anvil-style focus-target enum for the seat.
+- **dmabuf commits handled only for xdg toplevels** — a GL client's popups,
+  layer surfaces and X11 windows fall through `composite_tree` (which finds no
+  shm content) and never appear; pure-dmabuf toplevels also never deliver
+  title/app-id/size-hints and skip the window-geometry crop.
+- **dmabuf buffers are released immediately** after duping the plane fds
+  (`take_dmabuf`), while the UI thread may still be importing/sampling the same
+  memory — clients that reuse the buffer right away can tear.
+- **Unmap via null-buffer commit isn't signalled** — a client that attaches a
+  null buffer to unmap (instead of destroying the role) keeps its last frame on
+  screen and keeps receiving input; no hide/remove event exists for that path.
 - **`focus_changed` is a no-op** — the compositor emits no focus signal of its
   own; focus visuals/behaviour live entirely in the UI.
+- **`NotificationClosed` is never emitted** (notification daemon, not the
+  compositor) — dismissal/expiry are internal to the UI, so spec-compliant
+  clients that wait for close (`notify-send --wait`, libnotify close tracking)
+  hang forever.
 
 ---
 
@@ -120,3 +140,19 @@ rendering**, **`wp_viewport` crop/scale** (shm path), **client-initiated
 interactive resize** (xdg + X11, driven by the UI like the resize grips),
 **popup slide-clamping** into the content area, and **value120 discrete
 scroll** steps.
+
+From the whole-codebase bug review: **straight-alpha compositing onto
+translucent canvases** (was writing premultiplied color), **layer-shell initial
+configure** (was always output-sized: sent before the client's `set_size`
+committed), **centering of unanchored layer-surface axes**, **popup buffers
+cropped to their window geometry** (CSD menus rendered offset by their shadow
+margin), **layer-parented popups anchored to their layer surface** (rendered at
+the origin), **drag-icon cursor hotspot** (was hardcoded 0,0),
+**`surface_pixels` cache pruned on role destruction**, plus UI-side fixes:
+task-id reuse corrupting the time log after restart, idle time silently
+counted (retroactive idle flush was a no-op) and lock un-pausing itself,
+keystrokes leaking to clients through the lock screen, GL-texture leaks when a
+window closed with an in-flight frame (and popup/layer tile-map leaks),
+non-atomic state saves, zombie client processes, Alt+Tab cycling onto
+minimized windows, stale window focus after desktop switches, and a
+`clamp` panic for tiny windows in narrow outputs.

@@ -170,16 +170,19 @@ fn item_state(item: &StatusNotifierItem) -> ItemState {
 /// Pick the largest pixmap and convert it from SNI's ARGB32 (bytes `A R G B`) to
 /// the RGBA8 Slint expects.
 fn best_pixmap(pixmaps: Option<&[system_tray::item::IconPixmap]>) -> Option<(u32, u32, Vec<u8>)> {
+    // Dimensions are i32s straight off the session bus; bound them so a huge
+    // claimed size can't overflow the area math (a panic in debug builds).
+    const MAX_DIM: i32 = 4096;
     let best = pixmaps?
         .iter()
-        .filter(|p| p.width > 0 && p.height > 0)
-        .max_by_key(|p| p.width * p.height)?;
-    let expected = (best.width * best.height * 4) as usize;
+        .filter(|p| (1..=MAX_DIM).contains(&p.width) && (1..=MAX_DIM).contains(&p.height))
+        .max_by_key(|p| p.width as u64 * p.height as u64)?;
+    let expected = best.width as usize * best.height as usize * 4;
     if best.pixels.len() < expected {
         return None;
     }
     let mut rgba = Vec::with_capacity(expected);
-    for chunk in best.pixels.chunks_exact(4) {
+    for chunk in best.pixels[..expected].chunks_exact(4) {
         let [a, r, g, b] = [chunk[0], chunk[1], chunk[2], chunk[3]];
         rgba.extend_from_slice(&[r, g, b, a]);
     }

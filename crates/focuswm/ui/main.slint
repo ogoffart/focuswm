@@ -485,6 +485,17 @@ export component Desktop inherits Window {
     // Match std-widgets to the dark theme.
     init => { Palette.color-scheme = ColorScheme.dark; shortcuts.focus(); }
 
+    // Move keyboard focus onto the lock screen while locked (otherwise
+    // keystrokes keep flowing to the focused client behind the overlay and
+    // "any key unlocks" never fires), and back to the shortcut scope after.
+    changed locked => {
+        if (root.locked) {
+            lockscreen.focus();
+        } else {
+            shortcuts.focus();
+        }
+    }
+
     // Maps a digit key to a 0-based task index, or -1.
     pure function digit-index(t: string) -> int {
         t == "1" ? 0 : t == "2" ? 1 : t == "3" ? 2 : t == "4" ? 3 : t == "5" ? 4
@@ -617,8 +628,8 @@ export component Desktop inherits Window {
             // window while a client drag is in progress.
             if AppData.dnd-active && AppData.dnd-w > 0px: Image {
                 source: AppData.dnd-icon;
-                x: AppData.dnd-x;
-                y: AppData.dnd-y;
+                x: AppData.dnd-x - AppData.dnd-hot-x;
+                y: AppData.dnd-y - AppData.dnd-hot-y;
                 width: AppData.dnd-w;
                 height: AppData.dnd-h;
                 image-fit: fill;
@@ -750,7 +761,7 @@ export component Desktop inherits Window {
     }
 
     // Lock screen (top-most overlay).
-    LockScreen {
+    lockscreen := LockScreen {
         visible: root.locked;
         x: 0; y: 0;
         width: 100%;

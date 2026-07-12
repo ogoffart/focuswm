@@ -92,11 +92,19 @@ pub fn blit_over(
                 dst[d..d + 4].copy_from_slice(sp);
                 continue;
             }
+            // Straight-alpha "source over": both color and alpha must weigh the
+            // destination by its own alpha, otherwise blending onto a
+            // not-fully-opaque canvas (e.g. the transparent flattening canvas)
+            // leaves premultiplied color values in a straight-alpha buffer.
             let inv = 255 - a;
+            let da = dst[d + 3] as u32;
+            // out_a scaled by 255 (i.e. a_out * 255); non-zero because a > 0.
+            let out_a = a * 255 + da * inv;
             for c in 0..3 {
-                dst[d + c] = ((sp[c] as u32 * a + dst[d + c] as u32 * inv) / 255) as u8;
+                let num = sp[c] as u32 * a * 255 + dst[d + c] as u32 * da * inv;
+                dst[d + c] = (num / out_a) as u8;
             }
-            dst[d + 3] = (a + dst[d + 3] as u32 * inv / 255) as u8;
+            dst[d + 3] = ((out_a + 127) / 255) as u8;
         }
     }
 }
@@ -154,6 +162,27 @@ mod tests {
         // ~50% blend toward white.
         assert!(dst[0] > 120 && dst[0] < 135);
         assert_eq!(dst[3], 255);
+    }
+
+    #[test]
+    fn blit_onto_transparent_keeps_source_color() {
+        // Blending onto a fully transparent canvas must keep the straight-alpha
+        // source untouched, not premultiply its color by its own alpha.
+        let mut dst = vec![0u8; 4]; // transparent, 1px
+        let src = [255u8, 200, 100, 128];
+        blit_over(&mut dst, 1, 1, 0, 0, &src, 1, 1);
+        assert_eq!(&dst[0..3], &[255, 200, 100]);
+        assert_eq!(dst[3], 128);
+    }
+
+    #[test]
+    fn blit_onto_translucent_weighs_destination_alpha() {
+        // 50% white over 50% black: a_out = 0.75, color = (0.5*255)/0.75 = 170.
+        let mut dst = vec![0u8, 0, 0, 128];
+        let src = [255u8, 255, 255, 128];
+        blit_over(&mut dst, 1, 1, 0, 0, &src, 1, 1);
+        assert!(dst[0] >= 168 && dst[0] <= 172, "got {}", dst[0]);
+        assert!(dst[3] >= 190 && dst[3] <= 193, "got {}", dst[3]);
     }
 
     #[test]

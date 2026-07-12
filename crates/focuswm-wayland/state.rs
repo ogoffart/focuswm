@@ -22,8 +22,6 @@ use smithay::wayland::shm::ShmState;
 
 use focuswm_shell::WindowId;
 
-use crate::Event;
-
 /// The single state value calloop hands to every protocol handler.
 pub struct FocusState {
     pub display_handle: DisplayHandle,
@@ -101,6 +99,11 @@ pub struct FocusState {
     /// The drag icon surface of an in-progress client drag-and-drop, if the
     /// client supplied one. Composited following the cursor while set.
     pub dnd_icon: Option<WlSurface>,
+
+    /// Accumulated `wl_surface.offset` of the drag icon: where its top-left
+    /// sits relative to the cursor (clients use negative offsets to put the
+    /// grab point inside the image). Reset when a drag starts.
+    pub dnd_offset: (i32, i32),
 }
 
 /// A tracked layer-shell surface (panel, bar, wallpaper, notification).
@@ -137,6 +140,10 @@ pub struct PopupEntry {
     pub parent_id: Option<WindowId>,
     /// Offset from the parent surface, from the positioner geometry.
     pub offset: (i32, i32),
+    /// Top-left of the popup's declared window geometry within its buffer (the
+    /// displayed buffer is cropped to it, like toplevels); maps pointer
+    /// coordinates back to surface-local space.
+    pub geometry_offset: (i32, i32),
 }
 
 impl FocusState {
@@ -184,6 +191,7 @@ impl FocusState {
             .get(surface)
             .map(|e| e.id)
             .or_else(|| self.popups.get(surface).map(|e| e.id))
+            .or_else(|| self.layer_surfaces.get(surface).map(|e| e.id))
     }
 
     /// Offer the clipboard and primary selection to the client owning `surface`

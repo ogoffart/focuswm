@@ -7,6 +7,10 @@ import { Button } from "std-widgets.slint";
 export component LockScreen inherits Rectangle {
     background: #11111b;
 
+    // Keyboard focus must move here while locked (the host focuses us via
+    // `focus()`), so keystrokes stop reaching the previously focused client.
+    forward-focus: fs;
+
     // Eat all pointer input.
     TouchArea {
         clicked => { Logic.unlock(); }
